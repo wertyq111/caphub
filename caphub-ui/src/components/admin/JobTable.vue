@@ -1,5 +1,12 @@
 <script setup>
-import { formatDateTime } from '../../utils/adminPresentation';
+import { useAdminI18n } from '../../composables/useAdminI18n';
+import {
+  buildSourcePreview,
+  formatDateTime,
+  getStatusLabel,
+  getStatusTagType,
+  startCase,
+} from '../../utils/adminPresentation';
 
 defineProps({
   rows: {
@@ -9,28 +16,55 @@ defineProps({
 });
 
 const emit = defineEmits(['view']);
+const { locale, t } = useAdminI18n();
 </script>
 
 <template>
-  <el-table :data="rows" border>
-    <el-table-column prop="id" label="ID" width="80" />
-    <el-table-column prop="job_uuid" label="Job UUID" min-width="220" />
-    <el-table-column prop="status" label="Status" width="120" />
-    <el-table-column prop="source_lang" label="Source" width="100" />
-    <el-table-column prop="target_lang" label="Target" width="100" />
-    <el-table-column label="Started At" min-width="180">
+  <el-table :data="rows" stripe>
+    <el-table-column prop="id" :label="t('jobs.table.id')" width="90" />
+    <el-table-column :label="t('jobs.table.job')" min-width="280">
       <template #default="{ row }">
-        {{ formatDateTime(row.started_at) }}
+        <div class="space-y-2 py-1">
+          <p class="text-sm font-semibold text-slate-950">{{ row.job_uuid }}</p>
+          <div class="flex flex-wrap gap-2">
+            <el-tag size="small" effect="plain" round>{{ startCase(row.mode) }}</el-tag>
+            <el-tag size="small" effect="plain" round type="info">
+              {{ startCase(row.input_type) }}
+            </el-tag>
+          </div>
+        </div>
       </template>
     </el-table-column>
-    <el-table-column label="Finished At" min-width="180">
+    <el-table-column :label="t('jobs.table.status')" width="130">
       <template #default="{ row }">
-        {{ formatDateTime(row.finished_at) }}
+        <el-tag :type="getStatusTagType(row.status)">
+          {{ getStatusLabel(row.status, t) }}
+        </el-tag>
       </template>
     </el-table-column>
-    <el-table-column label="Actions" width="120">
+    <el-table-column :label="t('jobs.table.translationBody')" min-width="360">
       <template #default="{ row }">
-        <el-button size="small" @click="emit('view', row)">Detail</el-button>
+        <p
+          class="text-sm leading-6 text-slate-600"
+          style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;"
+        >
+          {{ buildSourcePreview(row) }}
+        </p>
+      </template>
+    </el-table-column>
+    <el-table-column :label="t('jobs.table.startedAt')" min-width="190">
+      <template #default="{ row }">
+        {{ formatDateTime(row.started_at, locale) }}
+      </template>
+    </el-table-column>
+    <el-table-column :label="t('jobs.table.finishedAt')" min-width="190">
+      <template #default="{ row }">
+        {{ formatDateTime(row.finished_at, locale) }}
+      </template>
+    </el-table-column>
+    <el-table-column :label="t('common.actions')" width="120" fixed="right">
+      <template #default="{ row }">
+        <el-button size="small" @click="emit('view', row)">{{ t('common.detail') }}</el-button>
       </template>
     </el-table-column>
   </el-table>

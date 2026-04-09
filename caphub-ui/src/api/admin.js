@@ -31,6 +31,15 @@ export async function updateGlossary(id, payload) {
 }
 
 /**
+ * 删除术语表记录，参数：id 术语 ID。
+ * @since 2026-04-09
+ * @author zhouxufeng
+ */
+export async function deleteGlossary(id) {
+  await http.delete(`/admin/glossaries/${id}`);
+}
+
+/**
  * 查询翻译任务列表，参数：params 查询参数（分页、筛选）。
  * @since 2026-04-02
  * @author zhouxufeng

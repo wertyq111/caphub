@@ -1,4 +1,4 @@
-export function formatDateTime(value) {
+export function formatDateTime(value, localeCode = 'zh-CN') {
   if (!value) {
     return '--';
   }
@@ -8,7 +8,7 @@ export function formatDateTime(value) {
     return '--';
   }
 
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(localeCode, {
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -18,12 +18,24 @@ export function formatDateTime(value) {
   }).format(date);
 }
 
+export function truncateText(value, maxLength = 140) {
+  const normalized = normalizeRichText(value);
+
+  if (normalized === '--' || normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength).trimEnd()}...`;
+}
+
 export function getStatusTagType(status) {
   switch (status) {
     case 'succeeded':
     case 'active':
       return 'success';
     case 'processing':
+    case 'pending':
+    case 'queued':
       return 'warning';
     case 'failed':
     case 'inactive':
@@ -31,6 +43,19 @@ export function getStatusTagType(status) {
     default:
       return 'info';
   }
+}
+
+export function getStatusLabel(status, translate) {
+  if (!status) {
+    return '--';
+  }
+
+  if (typeof translate !== 'function') {
+    return startCase(status);
+  }
+
+  const translated = translate(`statuses.${status}`);
+  return translated === `statuses.${status}` ? startCase(status) : translated;
 }
 
 export function startCase(value) {
@@ -48,34 +73,11 @@ export function toArray(value) {
 }
 
 export function buildSourcePreview(job) {
-  if (!job) {
-    return '--';
-  }
-
-  if (job.input_type === 'plain_text') {
-    return job.source_text || '--';
-  }
-
-  const parts = [job.source_title, job.source_summary, job.source_body]
-    .filter((item) => typeof item === 'string' && item.trim().length > 0);
-
-  return parts.join(' / ') || '--';
+  return truncateText(buildSourceDocument(job), 160);
 }
 
 export function buildTranslatedPreview(result) {
-  if (!result?.translated_document_json) {
-    return '--';
-  }
-
-  const payload = result.translated_document_json;
-  if (typeof payload.text === 'string' && payload.text.trim().length > 0) {
-    return payload.text;
-  }
-
-  const parts = [payload.title, payload.summary, payload.body]
-    .filter((item) => typeof item === 'string' && item.trim().length > 0);
-
-  return parts.join(' / ') || '--';
+  return truncateText(buildTranslatedDocument(result), 160);
 }
 
 export function getInvocationCounts(summary = {}) {
@@ -86,4 +88,58 @@ export function getInvocationCounts(summary = {}) {
     riskFlags: normalizedSummary.risk_flags_count ?? 0,
     notes: normalizedSummary.notes_count ?? 0,
   };
+}
+
+export function resolveRequestError(error, fallback = 'Something went wrong.') {
+  return error?.response?.data?.message ?? fallback;
+}
+
+export function buildSourceDocument(job) {
+  if (!job) {
+    return '--';
+  }
+
+  const candidates = [job.source_text, job.source_body, job.source_summary, job.source_title];
+  return firstNonEmptyDocument(candidates);
+}
+
+export function buildTranslatedDocument(result) {
+  const payload = result?.translated_document_json ?? result?.result?.translated_document_json;
+
+  if (!payload) {
+    return '--';
+  }
+
+  const candidates = [payload.text, payload.body, payload.summary, payload.title];
+  return firstNonEmptyDocument(candidates);
+}
+
+export function normalizeRichText(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return '--';
+  }
+
+  return value
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|section|article|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim() || '--';
+}
+
+function firstNonEmptyDocument(values) {
+  for (const value of values) {
+    const normalized = normalizeRichText(value);
+    if (normalized !== '--') {
+      return normalized;
+    }
+  }
+
+  return '--';
 }

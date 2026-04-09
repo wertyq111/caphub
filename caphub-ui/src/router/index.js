@@ -46,7 +46,7 @@ export const routes = [
     name: 'admin-login',
     component: () => import('../pages/admin/LoginPage.vue'),
     meta: {
-      layout: 'admin',
+      layout: 'admin-auth',
       requiresAuth: false,
     },
   },

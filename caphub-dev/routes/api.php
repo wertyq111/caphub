@@ -28,7 +28,7 @@ Route::prefix('admin')->group(function (): void {
 
     Route::middleware('auth:sanctum')->group(function (): void {
         Route::apiResource('glossaries', GlossaryController::class)
-            ->only(['index', 'store', 'update']);
+            ->only(['index', 'store', 'update', 'destroy']);
         Route::get('/translation-jobs', [TranslationJobController::class, 'index']);
         Route::get('/translation-jobs/{job}', [TranslationJobController::class, 'show']);
         Route::get('/ai-invocations', [AiInvocationController::class, 'index']);
