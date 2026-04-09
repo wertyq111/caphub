@@ -1,0 +1,14 @@
+services:
+  caphub-ui:
+    build:
+      context: .
+      target: dev
+    container_name: caphub-ui
+    ports:
+      - "${CAPHUB_UI_PORT:-5188}:5173"
+    environment:
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://10.10.9.184:8090/api}
+    volumes:
+      - ./:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 5173

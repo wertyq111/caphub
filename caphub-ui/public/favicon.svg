@@ -1,0 +1,44 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 64 64"
+  role="img"
+  aria-labelledby="faviconTitle"
+>
+  <title id="faviconTitle">CapHub favicon</title>
+  <defs>
+    <linearGradient id="bgGradient" x1="10" y1="8" x2="54" y2="56" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0b2438" />
+      <stop offset="1" stop-color="#06111e" />
+    </linearGradient>
+    <linearGradient id="hexStroke" x1="18" y1="16" x2="47" y2="49" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#61f6ff" />
+      <stop offset="1" stop-color="#10c8e8" />
+    </linearGradient>
+    <filter id="cyanGlow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="0" stdDeviation="2.8" flood-color="#39e9ff" flood-opacity="0.9" />
+      <feDropShadow dx="0" dy="0" stdDeviation="1.4" flood-color="#8dfbff" flood-opacity="0.85" />
+    </filter>
+  </defs>
+
+  <rect width="64" height="64" rx="14" fill="url(#bgGradient)" />
+
+  <!-- Chemical hexagon silhouette kept bold for favicon sizes. -->
+  <g filter="url(#cyanGlow)">
+    <path
+      d="M32 13.5 L47.5 22.5 L47.5 41.5 L32 50.5 L16.5 41.5 L16.5 22.5 Z"
+      fill="none"
+      stroke="url(#hexStroke)"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="4"
+    />
+    <path
+      d="M38.5 21.5C35.5 19.7 31.8 19 28.4 19.8C22.6 21.2 18.5 26.2 18.5 32C18.5 37.8 22.6 42.8 28.4 44.2C31.8 45 35.5 44.3 38.5 42.5"
+      fill="none"
+      stroke="#eefcff"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="5.5"
+    />
+  </g>
+</svg>
