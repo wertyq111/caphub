@@ -2,6 +2,7 @@
 
 namespace App\Clients\Ai\OpenClaw;
 
+use RuntimeException;
 use Throwable;
 
 class OpenClawTranslationGateway
@@ -85,6 +86,80 @@ class OpenClawTranslationGateway
     }
 
     /**
+     * 并发发送多组翻译文档并分别记录调用日志，参数：$requests 请求列表。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<array-key, array{
+     *     payload: array<string, mixed>,
+     *     job_id?: int|null,
+     *     context?: array<string, mixed>,
+     *     enforce_target_language?: bool,
+     *     allow_partial_translated_document?: bool
+     * }>  $requests
+     * @return array<array-key, array{response?: array<string, mixed>, exception?: RuntimeException}>
+     */
+    public function translateDocumentsConcurrently(
+        array $requests,
+        int $concurrency = 4,
+        bool $enforceTargetLanguage = true,
+        bool $allowPartialTranslatedDocument = false,
+    ): array {
+        if ($requests === []) {
+            return [];
+        }
+
+        $startedAt = [];
+        $clientRequests = [];
+
+        foreach ($requests as $key => $request) {
+            $startedAt[$key] = microtime(true);
+            $clientRequests[$key] = [
+                'payload' => (array) ($request['payload'] ?? []),
+                'enforce_target_language' => (bool) ($request['enforce_target_language'] ?? $enforceTargetLanguage),
+                'allow_partial_translated_document' => (bool) ($request['allow_partial_translated_document'] ?? $allowPartialTranslatedDocument),
+            ];
+        }
+
+        $results = $this->client->sendTranslationPayloadsConcurrently($clientRequests, $concurrency);
+
+        foreach ($results as $key => $result) {
+            $request = $requests[$key] ?? [];
+            $payload = (array) ($request['payload'] ?? []);
+            $jobId = array_key_exists('job_id', $request) ? $request['job_id'] : null;
+            $context = (array) ($request['context'] ?? []);
+
+            if (isset($result['response']) && is_array($result['response'])) {
+                $this->safeLogTranslation(
+                    agentName: $this->translationAgent(),
+                    requestPayload: $payload,
+                    responsePayload: $result['response'],
+                    status: 'success',
+                    durationMs: $this->durationInMs($startedAt[$key] ?? microtime(true)),
+                    jobId: $jobId,
+                    context: $context,
+                );
+
+                continue;
+            }
+
+            $exception = $result['exception'] ?? new RuntimeException('OpenClaw concurrent translation request failed.');
+
+            $this->safeLogTranslation(
+                agentName: $this->translationAgent(),
+                requestPayload: $payload,
+                responsePayload: null,
+                status: 'failed',
+                durationMs: $this->durationInMs($startedAt[$key] ?? microtime(true)),
+                jobId: $jobId,
+                errorMessage: $exception instanceof Throwable ? $exception->getMessage() : (string) $exception,
+                context: $context,
+            );
+        }
+
+        return $results;
+    }
+
+    /**
      * 获取当前翻译 Agent 标识，参数：无。
      * @since 2026-04-02
      * @author zhouxufeng
@@ -117,6 +192,7 @@ class OpenClawTranslationGateway
         int $durationMs,
         ?int $jobId = null,
         ?string $errorMessage = null,
+        ?array $context = null,
     ): void {
         try {
             $this->logger->logTranslation(
@@ -127,6 +203,7 @@ class OpenClawTranslationGateway
                 durationMs: $durationMs,
                 jobId: $jobId,
                 errorMessage: $errorMessage,
+                context: $context,
             );
         } catch (Throwable $throwable) {
             report($throwable);

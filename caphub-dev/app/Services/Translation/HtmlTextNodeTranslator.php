@@ -14,6 +14,41 @@ class HtmlTextNodeTranslator
     protected array $rawTextTags = ['script', 'style', 'noscript'];
 
     /**
+     * 语义分段时视为块级边界的标签集合。
+     *
+     * @var array<int, string>
+     */
+    protected array $segmentBoundaryTags = [
+        'article',
+        'aside',
+        'blockquote',
+        'br',
+        'div',
+        'footer',
+        'h1',
+        'h2',
+        'h3',
+        'h4',
+        'h5',
+        'h6',
+        'header',
+        'li',
+        'main',
+        'nav',
+        'ol',
+        'p',
+        'section',
+        'table',
+        'tbody',
+        'td',
+        'tfoot',
+        'th',
+        'thead',
+        'tr',
+        'ul',
+    ];
+
+    /**
      * 判断文本是否包含 HTML 标签结构，参数：$text 原始文本。
      * @since 2026-04-03
      * @author zhouxufeng
@@ -131,6 +166,177 @@ class HtmlTextNodeTranslator
             'parts' => $compiledParts,
             'nodes' => $nodes,
         ];
+    }
+
+    /**
+     * 将 HTML 文本节点按块级边界与长度限制编译为语义段。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @return array{
+     *     parts: array<int, array{type: string, value?: string, node_index?: int}>,
+     *     nodes: array<int, array{
+     *         original: string,
+     *         leading_whitespace: string,
+     *         core_text: string,
+     *         trailing_whitespace: string,
+     *         entity_map: array<string, string>
+     *     }>,
+     *     segments: array<int, array{
+     *         index: int,
+     *         node_indexes: array<int, int>,
+     *         visible_length: int,
+     *         source_text: string
+     *     }>
+     * }
+     */
+    public function compileSemanticSegments(string $html, int $targetTextLength = 300, int $maxTextLength = 600): array
+    {
+        $compiled = $this->compile($html);
+        $segments = [];
+        $buffer = [];
+        $bufferLength = 0;
+
+        $flushBuffer = function () use (&$segments, &$buffer, &$bufferLength, $compiled): void {
+            if ($buffer === []) {
+                return;
+            }
+
+            $segmentIndex = count($segments);
+            $segments[] = [
+                'index' => $segmentIndex,
+                'node_indexes' => array_values($buffer),
+                'visible_length' => $bufferLength,
+                'source_text' => $this->encodeSegmentNodeTexts([
+                    'node_indexes' => array_values($buffer),
+                ], array_map(
+                    fn (int $nodeIndex): string => (string) ($compiled['nodes'][$nodeIndex]['core_text'] ?? ''),
+                    $buffer,
+                )),
+            ];
+
+            $buffer = [];
+            $bufferLength = 0;
+        };
+
+        foreach ($compiled['parts'] as $part) {
+            if (($part['type'] ?? 'raw') === 'node') {
+                $nodeIndex = $part['node_index'] ?? null;
+
+                if (! is_int($nodeIndex) || ! array_key_exists($nodeIndex, $compiled['nodes'])) {
+                    continue;
+                }
+
+                $nodeLength = mb_strlen((string) ($compiled['nodes'][$nodeIndex]['core_text'] ?? ''));
+
+                if ($buffer !== [] && $bufferLength + $nodeLength > $maxTextLength) {
+                    $flushBuffer();
+                }
+
+                $buffer[] = $nodeIndex;
+                $bufferLength += $nodeLength;
+
+                continue;
+            }
+
+            if (! $this->isSemanticSegmentBoundaryTag((string) ($part['value'] ?? ''))) {
+                continue;
+            }
+
+            if ($buffer !== [] && $bufferLength >= max(1, $targetTextLength)) {
+                $flushBuffer();
+                continue;
+            }
+
+            $flushBuffer();
+        }
+
+        $flushBuffer();
+
+        return [
+            'parts' => $compiled['parts'],
+            'nodes' => $compiled['nodes'],
+            'segments' => $segments,
+        ];
+    }
+
+    /**
+     * 将一段语义段的节点文本编码为占位符串，参数：$segment 段定义，$nodeTexts 节点文本。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array{node_indexes: array<int, int>}  $segment
+     * @param  array<int|string, string>  $nodeTexts
+     */
+    public function encodeSegmentNodeTexts(array $segment, array $nodeTexts): string
+    {
+        $encoded = '';
+
+        foreach (array_values((array) ($segment['node_indexes'] ?? [])) as $localIndex => $nodeIndex) {
+            $nodeText = $nodeTexts[$localIndex] ?? $nodeTexts[$nodeIndex] ?? '';
+            $encoded .= sprintf(
+                '[[NODE_%d_START]]%s[[NODE_%d_END]]',
+                $localIndex,
+                $nodeText,
+                $localIndex,
+            );
+        }
+
+        return $encoded;
+    }
+
+    /**
+     * 将段级占位符译文解码回原始节点索引到节点文本的映射。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array{node_indexes: array<int, int>}  $segment
+     * @return array<int, string>
+     */
+    public function decodeSegmentNodeTexts(array $segment, string $encodedText): array
+    {
+        $nodeIndexes = array_values((array) ($segment['node_indexes'] ?? []));
+
+        if ($nodeIndexes === []) {
+            return [];
+        }
+
+        $matches = [];
+        preg_match_all('/\[\[NODE_(\d+)_START\]\](.*?)\[\[NODE_\1_END\]\]/us', $encodedText, $matches, PREG_SET_ORDER);
+
+        if ($matches === [] && count($nodeIndexes) === 1) {
+            return [$nodeIndexes[0] => $encodedText];
+        }
+
+        $decoded = [];
+
+        foreach ($matches as $match) {
+            $localIndex = (int) ($match[1] ?? -1);
+
+            if (! array_key_exists($localIndex, $nodeIndexes)) {
+                continue;
+            }
+
+            $decoded[$nodeIndexes[$localIndex]] = (string) ($match[2] ?? '');
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * 获取语义段内所有占位符标记，参数：$segment 段定义。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array{node_indexes: array<int, int>}  $segment
+     * @return array<int, string>
+     */
+    public function segmentPlaceholderTokens(array $segment): array
+    {
+        $tokens = [];
+
+        foreach (array_values((array) ($segment['node_indexes'] ?? [])) as $localIndex => $unusedNodeIndex) {
+            $tokens[] = sprintf('[[NODE_%d_START]]', $localIndex);
+            $tokens[] = sprintf('[[NODE_%d_END]]', $localIndex);
+        }
+
+        return $tokens;
     }
 
     /**
@@ -258,6 +464,24 @@ class HtmlTextNodeTranslator
     protected function isHtmlTag(string $part): bool
     {
         return str_starts_with($part, '<') && str_ends_with($part, '>');
+    }
+
+    /**
+     * 判断标签是否应作为语义段边界，参数：$tag HTML 标签文本。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     */
+    protected function isSemanticSegmentBoundaryTag(string $tag): bool
+    {
+        if (! $this->isHtmlTag($tag)) {
+            return false;
+        }
+
+        if (preg_match('/^<\s*\/?\s*([a-zA-Z0-9:-]+)/u', $tag, $matches) !== 1) {
+            return false;
+        }
+
+        return in_array(strtolower((string) $matches[1]), $this->segmentBoundaryTags, true);
     }
 
     /**

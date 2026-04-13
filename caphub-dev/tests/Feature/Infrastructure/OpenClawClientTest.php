@@ -63,7 +63,8 @@ it('posts a translation payload to OpenClaw and returns the response structure',
 
         expect($request->url())->toBe('https://openclaw.example.test/v1/chat/completions');
         expect($request->hasHeader('Authorization', 'Bearer test-api-key'))->toBeTrue();
-        expect($payload['model'])->toBe('chemical-news-translator');
+        expect($request->hasHeader('x-openclaw-scopes', 'operator.write'))->toBeTrue();
+        expect($payload['model'])->toBe('openclaw/chemical-news-translator');
         expect($payload['stream'])->toBeFalse();
         expect(data_get($payload, 'messages.0.role'))->toBe('system');
         expect(data_get($payload, 'messages.1.role'))->toBe('user');
@@ -255,6 +256,139 @@ it('allows lenient translation payloads to omit some translated document keys', 
             'provider_model' => 'openclaw',
         ],
     ]);
+});
+
+it('includes placeholder preservation instructions when placeholders are provided in constraints', function () {
+    config()->set('services.openclaw', [
+        'base_url' => 'https://openclaw.example.test',
+        'api_key' => 'test-api-key',
+        'translation_agent' => 'chemical-news-translator',
+        'timeout' => 30,
+    ]);
+
+    Http::fake([
+        '*' => Http::response([
+            'translated_document' => [
+                'segment_0' => '[[NODE_0_START]]First paragraph[[NODE_0_END]]',
+            ],
+            'glossary_hits' => [],
+            'risk_flags' => [],
+            'notes' => [],
+            'meta' => [
+                'schema_version' => 'v1',
+            ],
+        ], 200),
+    ]);
+
+    app(OpenClawClient::class)->translateLenient([
+        'segment_0' => '[[NODE_0_START]]第一段[[NODE_0_END]]',
+        'source_lang' => 'zh',
+        'target_lang' => 'en',
+    ], [], [
+        'preserve_placeholders' => ['[[NODE_0_START]]', '[[NODE_0_END]]'],
+    ]);
+
+    Http::assertSent(function (Request $request) {
+        $payload = json_decode($request->body(), true);
+        $instructions = (string) data_get($payload, 'messages.0.content', '');
+
+        expect($instructions)->toContain('Preserve every placeholder token exactly as provided in the source text.');
+        expect($instructions)->toContain('[[NODE_0_START]]');
+        expect($instructions)->toContain('[[NODE_0_END]]');
+
+        return true;
+    });
+});
+
+it('uses the full translation URL for concurrent OpenClaw requests', function () {
+    config()->set('services.openclaw', [
+        'base_url' => 'https://openclaw.example.test',
+        'api_key' => 'test-api-key',
+        'translation_agent' => 'chemical-news-translator',
+        'timeout' => 30,
+    ]);
+
+    Http::fake([
+        '*' => Http::sequence()
+            ->push([
+                'id' => 'chatcmpl_one',
+                'object' => 'chat.completion',
+                'created' => 1_775_111_081,
+                'model' => 'openclaw/chemical-news-translator',
+                'choices' => [[
+                    'index' => 0,
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => json_encode([
+                            'translated_document' => [
+                                'segment_0' => 'First segment',
+                            ],
+                            'glossary_hits' => [],
+                            'risk_flags' => [],
+                            'notes' => [],
+                            'meta' => [
+                                'schema_version' => 'v1',
+                            ],
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    ],
+                    'finish_reason' => 'stop',
+                ]],
+            ], 200)
+            ->push([
+                'id' => 'chatcmpl_two',
+                'object' => 'chat.completion',
+                'created' => 1_775_111_082,
+                'model' => 'openclaw/chemical-news-translator',
+                'choices' => [[
+                    'index' => 0,
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => json_encode([
+                            'translated_document' => [
+                                'segment_1' => 'Second segment',
+                            ],
+                            'glossary_hits' => [],
+                            'risk_flags' => [],
+                            'notes' => [],
+                            'meta' => [
+                                'schema_version' => 'v1',
+                            ],
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    ],
+                    'finish_reason' => 'stop',
+                ]],
+            ], 200),
+    ]);
+
+    $results = app(OpenClawClient::class)->sendTranslationPayloadsConcurrently([
+        [
+            'payload' => [
+                'segment_0' => '第一段',
+                'source_lang' => 'zh',
+                'target_lang' => 'en',
+            ],
+        ],
+        [
+            'payload' => [
+                'segment_1' => '第二段',
+                'source_lang' => 'zh',
+                'target_lang' => 'en',
+            ],
+        ],
+    ], 2);
+
+    Http::assertSentCount(2);
+
+    Http::assertSent(function (Request $request) {
+        expect($request->url())->toBe('https://openclaw.example.test/v1/chat/completions');
+        expect($request->hasHeader('Authorization', 'Bearer test-api-key'))->toBeTrue();
+        expect($request->hasHeader('x-openclaw-scopes', 'operator.write'))->toBeTrue();
+
+        return true;
+    });
+
+    expect(data_get($results, '0.response.translated_document.segment_0'))->toBe('First segment');
+    expect(data_get($results, '1.response.translated_document.segment_1'))->toBe('Second segment');
 });
 
 it('retries once when OpenClaw returns invalid json before succeeding', function () {

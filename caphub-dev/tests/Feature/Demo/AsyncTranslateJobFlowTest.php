@@ -2,6 +2,7 @@
 
 use App\Services\TaskCenter\TranslationJobService;
 use App\Services\Translation\GlossaryHitPersister;
+use App\Services\Translation\HtmlTextNodeTranslator;
 use App\Services\Translation\TranslationService;
 use App\Enums\TranslationJobStatus;
 use App\Jobs\FinalizeTranslationJob;
@@ -13,6 +14,23 @@ use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
+
+function fakeSemanticSegmentDocument(string $html, array $translationsBySegmentIndex): array
+{
+    /** @var HtmlTextNodeTranslator $translator */
+    $translator = app(HtmlTextNodeTranslator::class);
+    $compiled = $translator->compileSemanticSegments($html, 300, 600);
+    $translatedDocument = [];
+
+    foreach ($translationsBySegmentIndex as $segmentIndex => $nodeTexts) {
+        $translatedDocument['segment_'.$segmentIndex] = $translator->encodeSegmentNodeTexts(
+            $compiled['segments'][$segmentIndex],
+            $nodeTexts,
+        );
+    }
+
+    return $translatedDocument;
+}
 
 it('dispatches an async translation job and allows polling for status and result', function () {
     Bus::fake();
@@ -225,44 +243,33 @@ it('preserves html tags and falls back to original text when a text node keeps f
     ]);
 
     $html = '<p><span style="color:#0000cd;">第一段内容</span><strong>第二段内容</strong></p>';
+    $invalidSegmentDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+            1 => '第二段 content',
+        ],
+    ]);
 
     Http::fake([
         '*' => Http::sequence()
             ->push([
-                'translated_document' => [
-                    'node_0' => 'First paragraph content',
-                    'node_1' => '第二段 content',
-                ],
+                'translated_document' => $invalidSegmentDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200)
             ->push([
-                'translated_document' => [
-                    'text' => '第二段 content',
-                ],
+                'translated_document' => $invalidSegmentDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
-                ],
-            ], 200)
-            ->push([
-                'translated_document' => [
-                    'text' => '第二段 still invalid',
-                ],
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200),
     ]);
@@ -286,14 +293,16 @@ it('preserves html tags and falls back to original text when a text node keeps f
         app(TranslationService::class),
     );
 
-    Http::assertSentCount(3);
+    Http::assertSentCount(2);
 
     Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
         expect($finalizeJob->result['response']['translated_document']['text'])
-            ->toBe('<p><span style="color:#0000cd;">First paragraph content</span><strong>第二段内容</strong></p>');
+            ->toBe('<p><span style="color:#0000cd;">第一段内容</span><strong>第二段内容</strong></p>');
         expect($finalizeJob->result['response']['meta']['html_mode'])->toBeTrue();
-        expect($finalizeJob->result['response']['meta']['translated_text_nodes'])->toBe(1);
-        expect($finalizeJob->result['response']['meta']['fallback_text_nodes'])->toBe(1);
+        expect($finalizeJob->result['response']['meta']['html_strategy'])->toBe('semantic_segment_parallel');
+        expect($finalizeJob->result['response']['meta']['translated_text_nodes'])->toBe(0);
+        expect($finalizeJob->result['response']['meta']['fallback_text_nodes'])->toBe(2);
+        expect($finalizeJob->result['response']['meta']['html_fallback_segment_count'])->toBe(1);
 
         return true;
     });
@@ -310,20 +319,23 @@ it('batches html text nodes into fewer upstream translation requests', function 
     ]);
 
     $html = '<p><span>第一段内容</span><strong>第二段内容</strong><em>第三段内容</em></p>';
+    $translatedDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+            1 => 'Second paragraph content',
+            2 => 'Third paragraph content',
+        ],
+    ]);
 
     Http::fake([
         '*' => Http::response([
-            'translated_document' => [
-                'node_0' => 'First paragraph content',
-                'node_1' => 'Second paragraph content',
-                'node_2' => 'Third paragraph content',
-            ],
+            'translated_document' => $translatedDocument,
             'glossary_hits' => [],
             'risk_flags' => [],
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
-                'provider_model' => 'chemical-news-translator',
+                'provider_model' => 'openclaw/chemical-news-translator',
             ],
         ], 200),
     ]);
@@ -355,6 +367,9 @@ it('batches html text nodes into fewer upstream translation requests', function 
         expect($finalizeJob->result['response']['meta']['html_mode'])->toBeTrue();
         expect($finalizeJob->result['response']['meta']['translated_text_nodes'])->toBe(3);
         expect($finalizeJob->result['response']['meta']['fallback_text_nodes'])->toBe(0);
+        expect($finalizeJob->result['response']['meta']['html_strategy'])->toBe('semantic_segment_parallel');
+        expect($finalizeJob->result['response']['meta']['html_batch_count'])->toBe(1);
+        expect($finalizeJob->result['response']['meta']['html_segment_count'])->toBe(1);
 
         return true;
     });
@@ -382,16 +397,22 @@ it('keeps short html payloads with many small text nodes in a single upstream ba
 
     $html = '<p>'.implode('', $segments).'</p>';
     $expectedHtml = '<p>'.implode('', $expectedSegments).'</p>';
+    $semanticDocument = fakeSemanticSegmentDocument($html, [
+        0 => array_map(
+            static fn (int $index): string => sprintf('Sentence %s', $index),
+            range(0, 38),
+        ),
+    ]);
 
     Http::fake([
         '*' => Http::response([
-            'translated_document' => $translatedDocument,
+            'translated_document' => $semanticDocument,
             'glossary_hits' => [],
             'risk_flags' => [],
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
-                'provider_model' => 'chemical-news-translator',
+                'provider_model' => 'openclaw/chemical-news-translator',
             ],
         ], 200),
     ]);
@@ -420,6 +441,7 @@ it('keeps short html payloads with many small text nodes in a single upstream ba
     Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) use ($expectedHtml) {
         expect($finalizeJob->result['response']['translated_document']['body'])->toBe($expectedHtml);
         expect($finalizeJob->result['response']['meta']['body_html_batch_count'])->toBe(1);
+        expect($finalizeJob->result['response']['meta']['body_html_segment_count'])->toBe(1);
         expect($finalizeJob->result['response']['meta']['body_translated_text_nodes'])->toBe(39);
 
         return true;
@@ -436,33 +458,41 @@ it('retries only missing html batch nodes instead of falling back for the whole 
         'retry_times' => 0,
     ]);
 
-    $html = '<p><span>第一段内容</span><strong>第二段内容</strong><em>第三段内容</em></p>';
+    $html = '<p><span>第一段内容</span></p><p><strong>第二段内容</strong></p><p><em>第三段内容</em></p>';
+    $partialBatchDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+        ],
+        1 => [
+            0 => 'Second paragraph content',
+        ],
+    ]);
+    $singleSegmentDocument = fakeSemanticSegmentDocument($html, [
+        2 => [
+            0 => 'Third paragraph content',
+        ],
+    ]);
 
     Http::fake([
         '*' => Http::sequence()
             ->push([
-                'translated_document' => [
-                    'node_0' => 'First paragraph content',
-                    'node_1' => 'Second paragraph content',
-                ],
+                'translated_document' => $partialBatchDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200)
             ->push([
-                'translated_document' => [
-                    'text' => 'Third paragraph content',
-                ],
+                'translated_document' => $singleSegmentDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200),
     ]);
@@ -490,9 +520,10 @@ it('retries only missing html batch nodes instead of falling back for the whole 
 
     Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
         expect($finalizeJob->result['response']['translated_document']['text'])
-            ->toBe('<p><span>First paragraph content</span><strong>Second paragraph content</strong><em>Third paragraph content</em></p>');
+            ->toBe('<p><span>First paragraph content</span></p><p><strong>Second paragraph content</strong></p><p><em>Third paragraph content</em></p>');
         expect($finalizeJob->result['response']['meta']['translated_text_nodes'])->toBe(3);
         expect($finalizeJob->result['response']['meta']['fallback_text_nodes'])->toBe(0);
+        expect($finalizeJob->result['response']['meta']['html_fallback_segment_count'])->toBe(0);
 
         return true;
     });
@@ -508,35 +539,47 @@ it('retries invalid html batch nodes together before falling back to per-node tr
         'retry_times' => 0,
     ]);
 
-    $html = '<p><span>第一段内容</span><strong>第二段内容</strong><em>第三段内容</em></p>';
+    $html = '<p><span>第一段内容</span></p><p><strong>第二段内容</strong></p><p><em>第三段内容</em></p>';
+    $invalidBatchDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+        ],
+        1 => [
+            0 => '第二段 content',
+        ],
+        2 => [
+            0 => '第三段 content',
+        ],
+    ]);
+    $retryBatchDocument = fakeSemanticSegmentDocument($html, [
+        1 => [
+            0 => 'Second paragraph content',
+        ],
+        2 => [
+            0 => 'Third paragraph content',
+        ],
+    ]);
 
     Http::fake([
         '*' => Http::sequence()
             ->push([
-                'translated_document' => [
-                    'node_0' => 'First paragraph content',
-                    'node_1' => '第二段 content',
-                    'node_2' => '第三段 content',
-                ],
+                'translated_document' => $invalidBatchDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200)
             ->push([
-                'translated_document' => [
-                    'node_1' => 'Second paragraph content',
-                    'node_2' => 'Third paragraph content',
-                ],
+                'translated_document' => $retryBatchDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200),
     ]);
@@ -564,15 +607,16 @@ it('retries invalid html batch nodes together before falling back to per-node tr
 
     Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
         expect($finalizeJob->result['response']['translated_document']['text'])
-            ->toBe('<p><span>First paragraph content</span><strong>Second paragraph content</strong><em>Third paragraph content</em></p>');
+            ->toBe('<p><span>First paragraph content</span></p><p><strong>Second paragraph content</strong></p><p><em>Third paragraph content</em></p>');
         expect($finalizeJob->result['response']['meta']['translated_text_nodes'])->toBe(3);
         expect($finalizeJob->result['response']['meta']['fallback_text_nodes'])->toBe(0);
+        expect($finalizeJob->result['response']['meta']['html_fallback_segment_count'])->toBe(0);
 
         return true;
     });
 });
 
-it('retries html article body nodes before failing the async article translation job', function () {
+it('retries html article body segments before falling back to original html', function () {
     Bus::fake();
     config()->set('services.openclaw', [
         'base_url' => 'https://openclaw.example.test',
@@ -582,33 +626,41 @@ it('retries html article body nodes before failing the async article translation
         'retry_times' => 0,
     ]);
 
-    $html = '<p><span>第一段内容</span><strong>第二段内容</strong></p>';
+    $html = '<p><span>第一段内容</span></p><p><strong>第二段内容</strong></p>';
+    $invalidBatchDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+        ],
+        1 => [
+            0 => '第二段 content',
+        ],
+    ]);
+    $singleSegmentDocument = fakeSemanticSegmentDocument($html, [
+        1 => [
+            0 => 'Second paragraph content',
+        ],
+    ]);
 
     Http::fake([
         '*' => Http::sequence()
             ->push([
-                'translated_document' => [
-                    'node_0' => 'First paragraph content',
-                    'node_1' => '第二段 content',
-                ],
+                'translated_document' => $invalidBatchDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200)
             ->push([
-                'translated_document' => [
-                    'text' => 'Second paragraph content',
-                ],
+                'translated_document' => $singleSegmentDocument,
                 'glossary_hits' => [],
                 'risk_flags' => [],
                 'notes' => [],
                 'meta' => [
                     'schema_version' => 'v1',
-                    'provider_model' => 'chemical-news-translator',
+                    'provider_model' => 'openclaw/chemical-news-translator',
                 ],
             ], 200),
     ]);
@@ -636,10 +688,12 @@ it('retries html article body nodes before failing the async article translation
 
     Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
         expect($finalizeJob->result['response']['translated_document']['body'])
-            ->toBe('<p><span>First paragraph content</span><strong>Second paragraph content</strong></p>');
+            ->toBe('<p><span>First paragraph content</span></p><p><strong>Second paragraph content</strong></p>');
         expect($finalizeJob->result['response']['meta']['html_fields'])->toBe(['body']);
         expect($finalizeJob->result['response']['meta']['body_html_mode'])->toBeTrue();
         expect($finalizeJob->result['response']['meta']['body_fallback_text_nodes'])->toBe(0);
+        expect($finalizeJob->result['response']['meta']['body_html_strategy'])->toBe('semantic_segment_parallel');
+        expect($finalizeJob->result['response']['meta']['body_html_fallback_segment_count'])->toBe(0);
 
         return true;
     });
@@ -656,20 +710,27 @@ it('normalizes chinese ordinal prefixes in translated html article body nodes', 
     ]);
 
     $html = '<p>一是开展摸底评估。</p><p>二是制定改造方案。</p><p>三是推进提质升级。</p>';
+    $translatedDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First, conduct baseline assessments.',
+        ],
+        1 => [
+            0 => 'Third, formulate renovation plans.',
+        ],
+        2 => [
+            0 => 'Third, advance quality and performance upgrades.',
+        ],
+    ]);
 
     Http::fake([
         '*' => Http::response([
-            'translated_document' => [
-                'node_0' => 'First, conduct baseline assessments.',
-                'node_1' => 'Third, formulate renovation plans.',
-                'node_2' => 'Third, advance quality and performance upgrades.',
-            ],
+            'translated_document' => $translatedDocument,
             'glossary_hits' => [],
             'risk_flags' => [],
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
-                'provider_model' => 'chemical-news-translator',
+                'provider_model' => 'openclaw/chemical-news-translator',
             ],
         ], 200),
     ]);

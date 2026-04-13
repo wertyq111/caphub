@@ -1,4 +1,4 @@
 *.log
 ._*
 .DS_Store
-
+caphub-ui/dist/
