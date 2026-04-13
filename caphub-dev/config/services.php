@@ -42,4 +42,12 @@ return [
         'timeout' => (int) env('OPENCLAW_TIMEOUT', 30),
     ],
 
+    'hermes' => [
+        'base_url' => env('HERMES_BASE_URL'),
+        'api_key' => env('HERMES_API_KEY'),
+        'profile' => env('HERMES_PROFILE', 'chemical-news-translator'),
+        'model' => env('HERMES_MODEL', 'gpt-5-mini'),
+        'timeout' => (int) env('HERMES_TIMEOUT', 120),
+    ],
+
 ];

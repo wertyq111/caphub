@@ -3,8 +3,6 @@
 namespace App\Services\Translation;
 
 use App\Enums\TranslationJobStatus;
-use App\Clients\Ai\OpenClaw\OpenClawClient;
-use App\Clients\Ai\OpenClaw\OpenClawTranslationGateway;
 use App\Models\DemoAccessLog;
 use App\Models\TranslationJob;
 use Illuminate\Support\Facades\Cache;
@@ -43,8 +41,7 @@ class TranslationService
      * @author zhouxufeng
      */
     public function __construct(
-        protected OpenClawClient $client,
-        protected OpenClawTranslationGateway $gateway,
+        protected TranslationGatewayRouter $gateway,
         protected TranslationModeResolver $modeResolver,
         protected TranslationResultPersister $resultPersister,
         protected GlossaryHitPersister $glossaryHitPersister,
@@ -106,7 +103,7 @@ class TranslationService
      */
     protected function syncCacheLockSeconds(): int
     {
-        $upstreamTimeout = max(1, (int) config('services.openclaw.timeout', 30));
+        $upstreamTimeout = $this->gateway->timeout();
 
         return max($upstreamTimeout + 15, 45);
     }
@@ -208,7 +205,8 @@ class TranslationService
             'input_type' => $normalizedRequest['input_type'] ?? 'plain_text',
             'document_type' => $normalizedRequest['document_type'] ?? null,
             'openclaw_payload' => $normalizedRequest['openclaw_payload'] ?? [],
-            'translation_agent' => config('services.openclaw.translation_agent', 'chemical-news-translator'),
+            'translation_provider' => $this->gateway->activeProvider()->value,
+            'translation_agent' => $this->gateway->activeAgent(),
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     }
 
@@ -324,7 +322,8 @@ class TranslationService
         $notes = [];
         $meta = [
             'schema_version' => 'v1',
-            'provider_model' => config('services.openclaw.translation_agent'),
+            'provider_model' => $this->gateway->activeAgent(),
+            'provider' => $this->gateway->activeProvider()->value,
             'chunked' => true,
             'chunk_count' => count($chunks),
         ];
@@ -417,7 +416,8 @@ class TranslationService
         $notes = [];
         $meta = [
             'schema_version' => 'v1',
-            'provider_model' => config('services.openclaw.translation_agent'),
+            'provider_model' => $this->gateway->activeAgent(),
+            'provider' => $this->gateway->activeProvider()->value,
             'html_fields' => array_values($htmlFields),
         ];
 
@@ -498,7 +498,8 @@ class TranslationService
             'notes' => $translation['notes'],
             'meta' => [
                 'schema_version' => 'v1',
-                'provider_model' => $translation['provider_model'] ?? config('services.openclaw.translation_agent'),
+                'provider_model' => $translation['provider_model'] ?? $this->gateway->activeAgent(),
+                'provider' => $this->gateway->activeProvider()->value,
                 'html_mode' => true,
                 'html_strategy' => 'semantic_segment_parallel',
                 'html_segment_count' => count($compiled['segments']),
@@ -1630,7 +1631,8 @@ class TranslationService
         $notes = [];
         $meta = [
             'schema_version' => 'v1',
-            'provider_model' => config('services.openclaw.translation_agent'),
+            'provider_model' => $this->gateway->activeAgent(),
+            'provider' => $this->gateway->activeProvider()->value,
         ];
 
         foreach ($chunks as $chunk) {

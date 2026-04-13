@@ -1,9 +1,8 @@
 <?php
 
-use App\Clients\Ai\OpenClaw\OpenClawClient;
-use App\Clients\Ai\OpenClaw\OpenClawTranslationGateway;
 use App\Services\Translation\GlossaryHitPersister;
 use App\Services\Translation\HtmlTextNodeTranslator;
+use App\Services\Translation\TranslationGatewayRouter;
 use App\Services\Translation\TranslationModeResolver;
 use App\Services\Translation\TranslationResultPersister;
 use App\Services\Translation\TranslationService;
@@ -14,9 +13,11 @@ uses(TestCase::class);
 it('uses a sync cache lock window that outlasts the upstream timeout', function () {
     config()->set('services.openclaw.timeout', 30);
 
+    $gateway = Mockery::mock(TranslationGatewayRouter::class);
+    $gateway->shouldReceive('timeout')->andReturn(30);
+
     $service = new class(
-        Mockery::mock(OpenClawClient::class),
-        Mockery::mock(OpenClawTranslationGateway::class),
+        $gateway,
         Mockery::mock(TranslationModeResolver::class),
         Mockery::mock(TranslationResultPersister::class),
         Mockery::mock(GlossaryHitPersister::class),

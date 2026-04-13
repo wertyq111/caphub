@@ -105,6 +105,21 @@ const messages = {
       jobCount: '翻译任务',
       invocationCount: 'AI 调用',
     },
+    translationProvider: {
+      title: '翻译接口切换',
+      description: '在后台统一切换当前翻译流量使用的接口提供方。',
+      selectLabel: '当前接口',
+      currentLabel: '生效中',
+      saveAction: '应用切换',
+      configured: '已配置',
+      notConfigured: '未配置',
+      helper: '切换后，新的同步与异步翻译任务都会走所选接口。',
+      updateSuccess: '翻译接口已更新。',
+      options: {
+        openclaw: 'OpenClaw',
+        hermes: 'Hermes',
+      },
+    },
     glossary: {
       newEntry: '新建术语',
       table: {
@@ -280,6 +295,21 @@ const messages = {
       glossaryCount: 'Glossary entries',
       jobCount: 'Translation jobs',
       invocationCount: 'AI invocations',
+    },
+    translationProvider: {
+      title: 'Translation Interface',
+      description: 'Switch the active translation provider for the admin console from one place.',
+      selectLabel: 'Active interface',
+      currentLabel: 'Live now',
+      saveAction: 'Apply switch',
+      configured: 'Configured',
+      notConfigured: 'Not configured',
+      helper: 'After switching, new sync and async translation requests will use the selected provider.',
+      updateSuccess: 'The translation interface has been updated.',
+      options: {
+        openclaw: 'OpenClaw',
+        hermes: 'Hermes',
+      },
     },
     glossary: {
       newEntry: 'New glossary',

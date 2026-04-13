@@ -68,3 +68,23 @@ export async function fetchAiInvocations(params = {}) {
   const { data } = await http.get('/admin/ai-invocations', { params });
   return data;
 }
+
+/**
+ * 查询当前后台启用的翻译接口提供方。
+ * @since 2026-04-13
+ * @author zhouxufeng
+ */
+export async function fetchTranslationProvider() {
+  const { data } = await http.get('/admin/system/translation-provider');
+  return data;
+}
+
+/**
+ * 更新后台启用的翻译接口提供方。
+ * @since 2026-04-13
+ * @author zhouxufeng
+ */
+export async function updateTranslationProvider(payload) {
+  const { data } = await http.put('/admin/system/translation-provider', payload);
+  return data;
+}

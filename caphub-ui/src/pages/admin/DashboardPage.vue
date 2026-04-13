@@ -1,15 +1,24 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
+import { ElMessage } from 'element-plus';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query';
 import { RouterLink } from 'vue-router';
-import { useQuery } from '@tanstack/vue-query';
 import { adminNavigationItems } from '../../admin/navigation';
-import { fetchGlossaries, fetchTranslationJobs, fetchAiInvocations } from '../../api/admin';
+import {
+  fetchGlossaries,
+  fetchTranslationJobs,
+  fetchAiInvocations,
+  fetchTranslationProvider,
+  updateTranslationProvider,
+} from '../../api/admin';
 import AdminPageHeader from '../../components/admin/AdminPageHeader.vue';
 import AdminPanel from '../../components/admin/AdminPanel.vue';
 import AdminStateBlock from '../../components/admin/AdminStateBlock.vue';
 import { useAdminI18n } from '../../composables/useAdminI18n';
 import { resolveRequestError } from '../../utils/adminPresentation';
 
+const queryClient = useQueryClient();
+const selectedProvider = ref('');
 const { t } = useAdminI18n();
 
 const glossaryQuery = useQuery({
@@ -27,11 +36,25 @@ const invocationsQuery = useQuery({
   queryFn: () => fetchAiInvocations({ per_page: 1 }),
 });
 
+const providerQuery = useQuery({
+  queryKey: ['admin', 'translation-provider'],
+  queryFn: fetchTranslationProvider,
+});
+
+const updateProviderMutation = useMutation({
+  mutationFn: updateTranslationProvider,
+  onSuccess: (data) => {
+    queryClient.setQueryData(['admin', 'translation-provider'], data);
+    ElMessage.success(t('translationProvider.updateSuccess'));
+  },
+});
+
 const isInitialLoading = computed(
   () =>
     glossaryQuery.isPending.value &&
     jobsQuery.isPending.value &&
-    invocationsQuery.isPending.value,
+    invocationsQuery.isPending.value &&
+    providerQuery.isPending.value,
 );
 
 const errorMessage = computed(() => {
@@ -64,6 +87,50 @@ const metricCards = computed(() => [
 const quickLinks = computed(() =>
   adminNavigationItems.filter((item) => item.routeName !== 'admin-dashboard'),
 );
+
+const providerErrorMessage = computed(() =>
+  providerQuery.error.value
+    ? resolveRequestError(providerQuery.error.value, t('states.errorDescription'))
+    : '',
+);
+
+const currentProvider = computed(() => providerQuery.data.value?.provider ?? '');
+const providerOptions = computed(() => providerQuery.data.value?.providers ?? []);
+const selectedProviderConfigured = computed(() =>
+  providerOptions.value.find((option) => option.key === selectedProvider.value)?.configured ?? false,
+);
+const isSavingProvider = computed(() => updateProviderMutation.isPending.value);
+const isSaveDisabled = computed(
+  () =>
+    isSavingProvider.value ||
+    selectedProvider.value.length === 0 ||
+    selectedProvider.value === currentProvider.value ||
+    !selectedProviderConfigured.value,
+);
+
+watch(
+  () => providerQuery.data.value?.provider,
+  (provider) => {
+    if (typeof provider === 'string' && provider.length > 0) {
+      selectedProvider.value = provider;
+    }
+  },
+  { immediate: true },
+);
+
+function providerLabel(key) {
+  return t(`translationProvider.options.${key}`);
+}
+
+async function saveProvider() {
+  try {
+    await updateProviderMutation.mutateAsync({
+      provider: selectedProvider.value,
+    });
+  } catch (error) {
+    ElMessage.error(resolveRequestError(error, t('states.errorDescription')));
+  }
+}
 </script>
 
 <template>
@@ -82,6 +149,77 @@ const quickLinks = computed(() =>
     />
 
     <template v-else>
+      <AdminPanel
+        :title="t('translationProvider.title')"
+        :subtitle="t('translationProvider.description')"
+      >
+        <div
+          v-if="providerQuery.isPending.value"
+          class="flex min-h-[144px] items-center justify-center rounded-[24px] border border-dashed border-sky-200 bg-sky-50/70 px-6 py-8"
+        >
+          <p class="text-sm text-sky-700">{{ t('states.loadingDescription') }}</p>
+        </div>
+
+        <AdminStateBlock
+          v-else-if="providerQuery.isError.value"
+          mode="error"
+          :title="t('states.errorTitle')"
+          :description="providerErrorMessage"
+        >
+          <el-button @click="providerQuery.refetch()">{{ t('common.retry') }}</el-button>
+        </AdminStateBlock>
+
+        <div v-else class="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div class="space-y-3">
+            <div class="flex flex-wrap items-center gap-2">
+              <el-tag type="primary" effect="light" round>
+                {{ t('translationProvider.currentLabel') }}: {{ providerLabel(currentProvider) }}
+              </el-tag>
+              <el-tag
+                :type="selectedProviderConfigured ? 'success' : 'danger'"
+                effect="plain"
+                round
+              >
+                {{
+                  selectedProviderConfigured
+                    ? t('translationProvider.configured')
+                    : t('translationProvider.notConfigured')
+                }}
+              </el-tag>
+            </div>
+
+            <p class="max-w-2xl text-sm leading-6 text-slate-500">
+              {{ t('translationProvider.helper') }}
+            </p>
+          </div>
+
+          <div class="flex w-full flex-col gap-3 xl:max-w-xl">
+            <span class="text-sm font-medium text-slate-600">
+              {{ t('translationProvider.selectLabel') }}
+            </span>
+            <div class="flex flex-col gap-3 sm:flex-row">
+              <el-select v-model="selectedProvider" class="sm:flex-1">
+                <el-option
+                  v-for="option in providerOptions"
+                  :key="option.key"
+                  :label="providerLabel(option.key)"
+                  :value="option.key"
+                  :disabled="!option.configured"
+                />
+              </el-select>
+              <el-button
+                type="primary"
+                :loading="isSavingProvider"
+                :disabled="isSaveDisabled"
+                @click="saveProvider"
+              >
+                {{ t('translationProvider.saveAction') }}
+              </el-button>
+            </div>
+          </div>
+        </div>
+      </AdminPanel>
+
       <div class="grid gap-4 md:grid-cols-3">
         <div
           v-for="card in metricCards"
