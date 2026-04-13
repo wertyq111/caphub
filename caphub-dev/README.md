@@ -1,58 +1,172 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# CapHub Backend
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+`caphub-dev` 是 CapHub 的 Laravel 后端，负责提供 Demo 翻译接口、异步任务编排、术语治理、后台管理 API 和 AI 调用审计。
 
-## About Laravel
+## 技术栈
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+- PHP `^8.3`
+- Laravel `^13`
+- Laravel Sanctum
+- Laravel Queue
+- MySQL 8.4
+- Redis
+- SQLite
+- Pest / PHPUnit
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+## 主要能力
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+### Demo API
 
-## Learning Laravel
+- `GET /api/ping`
+- `GET /api/demo/dashboard/stats`
+- `POST /api/demo/chat`
+- `POST /api/demo/translate/sync`
+- `POST /api/demo/translate/async`
+- `GET /api/demo/translate/jobs/{jobUuid}`
+- `GET /api/demo/translate/jobs/{jobUuid}/result`
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
+### Admin API
 
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+- `POST /api/admin/login`
+- `GET /api/admin/glossaries`
+- `POST /api/admin/glossaries`
+- `PUT /api/admin/glossaries/{id}`
+- `DELETE /api/admin/glossaries/{id}`
+- `GET /api/admin/translation-jobs`
+- `GET /api/admin/translation-jobs/{job}`
+- `GET /api/admin/ai-invocations`
+- `GET /api/admin/system/translation-provider`
+- `PUT /api/admin/system/translation-provider`
 
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
+详细字段说明见 [`docs/api/translation-admin-api.zh-CN.md`](./docs/api/translation-admin-api.zh-CN.md)。
 
-## Agentic Development
+## 目录结构
 
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
-
-```bash
-composer require laravel/boost --dev
-
-php artisan boost:install
+```text
+caphub-dev/
+├── app/
+├── bootstrap/
+├── config/
+├── database/
+├── docker/
+├── docs/
+├── public/
+├── resources/
+├── routes/
+├── tests/
+├── compose.yaml
+├── Dockerfile
+├── composer.json
+└── phpunit.xml
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+## 环境配置
 
-## Contributing
+默认 `.env.example` 走轻量本地模式：
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+- `DB_CONNECTION=sqlite`
+- `QUEUE_CONNECTION=database`
+- `CACHE_STORE=database`
+- `REDIS_HOST=127.0.0.1`
 
-## Code of Conduct
+翻译相关环境变量：
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+```dotenv
+OPENCLAW_BASE_URL=
+OPENCLAW_API_KEY=
+OPENCLAW_TRANSLATION_AGENT=chemical-news-translator
+OPENCLAW_TIMEOUT=30
 
-## Security Vulnerabilities
+HERMES_BASE_URL=
+HERMES_API_KEY=
+HERMES_PROFILE=chemical-news-translator
+HERMES_MODEL=gpt-5-mini
+HERMES_TIMEOUT=120
+```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+## 启动方式
 
-## License
+### 方式 A：本地轻量模式
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+适合快速开发 API、联调页面和跑测试。
+
+```bash
+cd caphub-dev
+composer install
+cp .env.example .env
+php artisan key:generate
+php artisan migrate
+composer run dev
+```
+
+`composer run dev` 会并行启动：
+
+- `php artisan serve`
+- `php artisan queue:listen --tries=1 --timeout=0`
+- `php artisan pail --timeout=0`
+- `npm run dev`
+
+### 方式 B：Laravel Sail 容器模式
+
+适合完整联调、异步任务验证和接近部署环境的开发。
+
+```bash
+cd caphub-dev
+composer install
+cp .env.example .env
+./vendor/bin/sail up -d --build
+./vendor/bin/sail artisan key:generate
+./vendor/bin/sail artisan migrate
+./vendor/bin/sail artisan db:seed
+```
+
+`compose.yaml` 当前会启动：
+
+- `app`
+- `queue`
+- `mysql`
+- `redis`
+
+如果使用 Sail，通常需要在 `.env` 中至少补齐这些配置：
+
+```dotenv
+DB_CONNECTION=mysql
+DB_HOST=mysql
+DB_PORT=3306
+DB_DATABASE=laravel
+DB_USERNAME=sail
+DB_PASSWORD=password
+
+REDIS_HOST=redis
+REDIS_PORT=6379
+
+APP_PORT=8090
+FORWARD_DB_PORT=3306
+FORWARD_REDIS_PORT=6379
+VITE_PORT=5179
+```
+
+## 测试
+
+运行全部后端测试：
+
+```bash
+cd caphub-dev
+composer test
+```
+
+运行指定测试：
+
+```bash
+php artisan test tests/Feature
+php artisan test tests/Unit
+```
+
+## 常看文件
+
+- 路由定义：[`routes/api.php`](./routes/api.php)
+- 业务代码：[`app/`](./app)
+- 数据库迁移：[`database/migrations`](./database/migrations)
+- 测试：[`tests/`](./tests)
+- 后端 API 文档：[`docs/api/translation-admin-api.zh-CN.md`](./docs/api/translation-admin-api.zh-CN.md)
+- 设计与计划：[`docs/superpowers/`](./docs/superpowers)
