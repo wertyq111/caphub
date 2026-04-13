@@ -4,6 +4,7 @@ use App\Http\Controllers\Admin\AiInvocationController;
 use App\Http\Controllers\Admin\Auth\LoginController;
 use App\Http\Controllers\Admin\GlossaryController;
 use App\Http\Controllers\Admin\TranslationJobController;
+use App\Http\Controllers\Admin\TranslationProviderController;
 use App\Http\Controllers\Demo\AsyncTranslationController;
 use App\Http\Controllers\Demo\ShowTranslationJobController;
 use App\Http\Controllers\Demo\ShowTranslationResultController;
@@ -32,5 +33,7 @@ Route::prefix('admin')->group(function (): void {
         Route::get('/translation-jobs', [TranslationJobController::class, 'index']);
         Route::get('/translation-jobs/{job}', [TranslationJobController::class, 'show']);
         Route::get('/ai-invocations', [AiInvocationController::class, 'index']);
+        Route::get('/system/translation-provider', [TranslationProviderController::class, 'show']);
+        Route::put('/system/translation-provider', [TranslationProviderController::class, 'update']);
     });
 });

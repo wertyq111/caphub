@@ -67,6 +67,9 @@ class OpenClawTranslationGateway
                 status: 'success',
                 durationMs: $this->durationInMs($startedAt),
                 jobId: $jobId,
+                context: [
+                    'provider' => 'openclaw',
+                ],
             );
 
             return $response;
@@ -79,6 +82,9 @@ class OpenClawTranslationGateway
                 durationMs: $this->durationInMs($startedAt),
                 jobId: $jobId,
                 errorMessage: $throwable->getMessage(),
+                context: [
+                    'provider' => 'openclaw',
+                ],
             );
 
             throw $throwable;
@@ -136,7 +142,9 @@ class OpenClawTranslationGateway
                     status: 'success',
                     durationMs: $this->durationInMs($startedAt[$key] ?? microtime(true)),
                     jobId: $jobId,
-                    context: $context,
+                    context: array_merge($context, [
+                        'provider' => 'openclaw',
+                    ]),
                 );
 
                 continue;
@@ -152,7 +160,9 @@ class OpenClawTranslationGateway
                 durationMs: $this->durationInMs($startedAt[$key] ?? microtime(true)),
                 jobId: $jobId,
                 errorMessage: $exception instanceof Throwable ? $exception->getMessage() : (string) $exception,
-                context: $context,
+                context: array_merge($context, [
+                    'provider' => 'openclaw',
+                ]),
             );
         }
 
@@ -164,9 +174,14 @@ class OpenClawTranslationGateway
      * @since 2026-04-02
      * @author zhouxufeng
      */
-    protected function translationAgent(): string
+    public function translationAgent(): string
     {
         return (string) config('services.openclaw.translation_agent', 'chemical-news-translator');
+    }
+
+    public function timeout(): int
+    {
+        return max(1, (int) config('services.openclaw.timeout', 30));
     }
 
     /**
