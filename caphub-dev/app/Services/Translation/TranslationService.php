@@ -23,6 +23,20 @@ class TranslationService
 
     protected const ASYNC_HTML_MAX_BATCH_NODES = 128;
 
+    protected const ASYNC_HTML_SEGMENT_TARGET_TEXT = 300;
+
+    protected const ASYNC_HTML_SEGMENT_TEXT_LIMIT = 600;
+
+    protected const ASYNC_HTML_SEGMENT_BATCH_TEXT_LIMIT = 1800;
+
+    protected const ASYNC_HTML_MAX_BATCH_SEGMENTS = 24;
+
+    protected const ASYNC_HTML_RETRY_BATCH_TEXT_LIMIT = 900;
+
+    protected const ASYNC_HTML_RETRY_MAX_BATCH_SEGMENTS = 6;
+
+    protected const ASYNC_HTML_BATCH_PARALLELISM = 4;
+
     /**
      * 初始化翻译服务依赖，参数：客户端、模式解析、结果持久化与术语命中持久化服务。
      * @since 2026-04-02
@@ -455,40 +469,584 @@ class TranslationService
      */
     protected function translateAsyncHtmlContent(TranslationJob $job, string $text): array
     {
-        $compiled = $this->htmlTextNodeTranslator->compile($text);
-        $glossaryHits = [];
-        $riskFlags = [];
-        $notes = [];
+        $compiled = $this->htmlTextNodeTranslator->compileSemanticSegments(
+            $text,
+            self::ASYNC_HTML_SEGMENT_TARGET_TEXT,
+            self::ASYNC_HTML_SEGMENT_TEXT_LIMIT,
+        );
+
         $translatedNodeTexts = [];
         $translatedTextNodes = 0;
         $fallbackTextNodes = 0;
-        $batches = $this->chunkHtmlTextNodes($compiled['nodes']);
+        $translation = $this->translateHtmlSegmentBatches($job, $compiled['nodes'], $compiled['segments']);
 
-        foreach ($batches as $batch) {
-            $translatedBatch = $this->translateHtmlNodeBatch($job, $compiled['nodes'], $batch);
+        foreach ($compiled['nodes'] as $nodeIndex => $node) {
+            $result = $this->htmlTextNodeTranslator->hydrateNodeText(
+                $node,
+                $translation['node_texts'][$nodeIndex] ?? null,
+            );
 
-            foreach ($translatedBatch['node_texts'] as $nodeIndex => $nodeText) {
-                $translatedNodeTexts[$nodeIndex] = $nodeText;
-            }
-
-            $translatedTextNodes += $translatedBatch['translated_text_nodes'];
-            $fallbackTextNodes += $translatedBatch['fallback_text_nodes'];
-            $this->mergeTranslationSignals($translatedBatch, $glossaryHits, $riskFlags, $notes);
+            $translatedNodeTexts[$nodeIndex] = $result['text'];
+            $translatedTextNodes += $result['translated'] ? 1 : 0;
+            $fallbackTextNodes += $result['fallback'] ? 1 : 0;
         }
 
         return [
             'text' => $this->htmlTextNodeTranslator->render($compiled['parts'], $translatedNodeTexts),
+            'glossary_hits' => $translation['glossary_hits'],
+            'risk_flags' => $translation['risk_flags'],
+            'notes' => $translation['notes'],
+            'meta' => [
+                'schema_version' => 'v1',
+                'provider_model' => $translation['provider_model'] ?? config('services.openclaw.translation_agent'),
+                'html_mode' => true,
+                'html_strategy' => 'semantic_segment_parallel',
+                'html_segment_count' => count($compiled['segments']),
+                'html_batch_count' => $translation['batch_count'],
+                'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                'html_fallback_segment_count' => $translation['fallback_segment_count'],
+                'translated_text_nodes' => $translatedTextNodes,
+                'fallback_text_nodes' => $fallbackTextNodes,
+            ],
+        ];
+    }
+
+    /**
+     * 将语义段按长度和数量切分为批次，参数：$segments 段列表，可选限制索引。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<int, array{visible_length: int}>  $segments
+     * @param  array<int, int>|null  $segmentIndexes
+     * @return array<int, array<int, int>>
+     */
+    protected function chunkHtmlSegments(
+        array $segments,
+        ?array $segmentIndexes = null,
+        int $textLimit = self::ASYNC_HTML_SEGMENT_BATCH_TEXT_LIMIT,
+        int $maxSegments = self::ASYNC_HTML_MAX_BATCH_SEGMENTS,
+    ): array {
+        $segmentIndexes ??= array_keys($segments);
+        $batches = [];
+        $buffer = [];
+        $bufferLength = 0;
+
+        foreach ($segmentIndexes as $segmentIndex) {
+            $segmentLength = (int) ($segments[$segmentIndex]['visible_length'] ?? 0);
+
+            if ($buffer !== [] && ($bufferLength + $segmentLength > $textLimit || count($buffer) >= $maxSegments)) {
+                $batches[] = $buffer;
+                $buffer = [];
+                $bufferLength = 0;
+            }
+
+            $buffer[] = $segmentIndex;
+            $bufferLength += $segmentLength;
+        }
+
+        if ($buffer !== []) {
+            $batches[] = $buffer;
+        }
+
+        return $batches;
+    }
+
+    /**
+     * 执行 HTML 语义段批次翻译并在失败时做分层回退。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<int, array{
+     *      original: string,
+     *      leading_whitespace: string,
+     *      core_text: string,
+     *      trailing_whitespace: string,
+     *      entity_map: array<string, string>
+     *  }>  $nodes
+     * @param  array<int, array{
+     *      index: int,
+     *      node_indexes: array<int, int>,
+     *      visible_length: int,
+     *      source_text: string
+     *  }>  $segments
+     * @return array{
+     *      node_texts: array<int, string>,
+     *      glossary_hits: array<int, mixed>,
+     *      risk_flags: array<int, mixed>,
+     *      notes: array<int, mixed>,
+     *      batch_count: int,
+     *      fallback_segment_count: int,
+     *      provider_model: string|null
+     * }
+     */
+    protected function translateHtmlSegmentBatches(TranslationJob $job, array $nodes, array $segments): array
+    {
+        if ($segments === []) {
+            return [
+                'node_texts' => [],
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'batch_count' => 0,
+                'fallback_segment_count' => 0,
+                'provider_model' => null,
+            ];
+        }
+
+        $batches = $this->chunkHtmlSegments($segments);
+        $requests = [];
+
+        foreach ($batches as $batchIndex => $segmentIndexes) {
+            $requests[$batchIndex] = $this->makeHtmlSegmentRequest($job, $segments, $segmentIndexes, [
+                'batch_index' => $batchIndex,
+                'segment_count' => count($segmentIndexes),
+                'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                'html_request_type' => 'segment_batch',
+            ]);
+        }
+
+        $results = $this->gateway->translateDocumentsConcurrently(
+            $requests,
+            self::ASYNC_HTML_BATCH_PARALLELISM,
+            false,
+            true,
+        );
+
+        $nodeTexts = [];
+        $glossaryHits = [];
+        $riskFlags = [];
+        $notes = [];
+        $fallbackSegmentCount = 0;
+        $providerModel = null;
+
+        foreach ($batches as $batchIndex => $segmentIndexes) {
+            $consumed = $this->consumeHtmlSegmentRequestResult(
+                $job,
+                $nodes,
+                $segments,
+                $segmentIndexes,
+                $results[$batchIndex] ?? [],
+            );
+
+            $nodeTexts = [...$nodeTexts, ...$consumed['node_texts']];
+            $this->mergeTranslationSignals($consumed, $glossaryHits, $riskFlags, $notes);
+            $fallbackSegmentCount += $consumed['fallback_segment_count'];
+            $providerModel ??= $consumed['provider_model'];
+        }
+
+        return [
+            'node_texts' => $nodeTexts,
             'glossary_hits' => $glossaryHits,
             'risk_flags' => $riskFlags,
             'notes' => $notes,
-            'meta' => [
-                'schema_version' => 'v1',
-                'provider_model' => config('services.openclaw.translation_agent'),
-                'html_mode' => true,
-                'translated_text_nodes' => $translatedTextNodes,
-                'fallback_text_nodes' => $fallbackTextNodes,
-                'html_batch_count' => count($batches),
+            'batch_count' => count($batches),
+            'fallback_segment_count' => $fallbackSegmentCount,
+            'provider_model' => $providerModel,
+        ];
+    }
+
+    /**
+     * 构建 HTML 语义段翻译请求。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<int, array{
+     *      node_indexes: array<int, int>,
+     *      source_text: string
+     *  }>  $segments
+     * @param  array<int, int>  $segmentIndexes
+     * @param  array<string, mixed>  $context
+     * @return array{
+     *      payload: array<string, mixed>,
+     *      job_id: int,
+     *      context: array<string, mixed>,
+     *      enforce_target_language: bool,
+     *      allow_partial_translated_document: bool
+     * }
+     */
+    protected function makeHtmlSegmentRequest(TranslationJob $job, array $segments, array $segmentIndexes, array $context): array
+    {
+        $document = [];
+        $placeholderTokens = [];
+
+        foreach ($segmentIndexes as $segmentIndex) {
+            $segment = $segments[$segmentIndex];
+            $document['segment_'.$segmentIndex] = (string) ($segment['source_text'] ?? '');
+            $placeholderTokens = [
+                ...$placeholderTokens,
+                ...$this->htmlTextNodeTranslator->segmentPlaceholderTokens($segment),
+            ];
+        }
+
+        return [
+            'payload' => $this->buildTranslationPayload($job, $document, [
+                'preserve_placeholders' => array_values(array_unique($placeholderTokens)),
+            ]),
+            'job_id' => $job->id,
+            'context' => $context,
+            'enforce_target_language' => false,
+            'allow_partial_translated_document' => true,
+        ];
+    }
+
+    /**
+     * 消费一组 HTML 语义段请求结果，并在异常时触发分层回退。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<int, array{
+     *      original: string,
+     *      leading_whitespace: string,
+     *      core_text: string,
+     *      trailing_whitespace: string,
+     *      entity_map: array<string, string>
+     *  }>  $nodes
+     * @param  array<int, array{
+     *      node_indexes: array<int, int>,
+     *      source_text: string
+     *  }>  $segments
+     * @param  array<int, int>  $segmentIndexes
+     * @param  array{response?: array<string, mixed>, exception?: Throwable}  $result
+     * @return array{
+     *      node_texts: array<int, string>,
+     *      glossary_hits: array<int, mixed>,
+     *      risk_flags: array<int, mixed>,
+     *      notes: array<int, mixed>,
+     *      fallback_segment_count: int,
+     *      provider_model: string|null
+     * }
+     */
+    protected function consumeHtmlSegmentRequestResult(
+        TranslationJob $job,
+        array $nodes,
+        array $segments,
+        array $segmentIndexes,
+        array $result,
+    ): array {
+        $parsed = isset($result['response']) && is_array($result['response'])
+            ? $this->parseHtmlSegmentRequestResult($job, $nodes, $segments, $segmentIndexes, $result['response'])
+            : [
+                'node_texts' => [],
+                'invalid_segments' => $segmentIndexes,
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'provider_model' => null,
+            ];
+
+        $retry = $this->retryInvalidHtmlSegments(
+            $job,
+            $nodes,
+            $segments,
+            $parsed['invalid_segments'],
+        );
+
+        return [
+            'node_texts' => [...$parsed['node_texts'], ...$retry['node_texts']],
+            'glossary_hits' => [...$parsed['glossary_hits'], ...$retry['glossary_hits']],
+            'risk_flags' => [...$parsed['risk_flags'], ...$retry['risk_flags']],
+            'notes' => [...$parsed['notes'], ...$retry['notes']],
+            'fallback_segment_count' => $retry['fallback_segment_count'],
+            'provider_model' => $parsed['provider_model'] ?? $retry['provider_model'],
+        ];
+    }
+
+    /**
+     * 解析 HTML 段批次响应，返回已成功解码的节点文本与仍需回退的段索引。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<int, array{
+     *      original: string,
+     *      leading_whitespace: string,
+     *      core_text: string,
+     *      trailing_whitespace: string,
+     *      entity_map: array<string, string>
+     *  }>  $nodes
+     * @param  array<int, array{node_indexes: array<int, int>}>  $segments
+     * @param  array<int, int>  $segmentIndexes
+     * @param  array<string, mixed>  $response
+     * @return array{
+     *      node_texts: array<int, string>,
+     *      invalid_segments: array<int, int>,
+     *      glossary_hits: array<int, mixed>,
+     *      risk_flags: array<int, mixed>,
+     *      notes: array<int, mixed>,
+     *      provider_model: string|null
+     * }
+     */
+    protected function parseHtmlSegmentRequestResult(
+        TranslationJob $job,
+        array $nodes,
+        array $segments,
+        array $segmentIndexes,
+        array $response,
+    ): array {
+        $translatedDocument = (array) ($response['translated_document'] ?? []);
+        $nodeTexts = [];
+        $invalidSegments = [];
+
+        foreach ($segmentIndexes as $segmentIndex) {
+            $segmentKey = 'segment_'.$segmentIndex;
+            $encodedText = $translatedDocument[$segmentKey] ?? null;
+
+            if (! is_string($encodedText)) {
+                $invalidSegments[] = $segmentIndex;
+
+                continue;
+            }
+
+            $decodedNodeTexts = $this->translateHtmlSegmentResponseToNodeTexts(
+                $job,
+                $nodes,
+                $segments[$segmentIndex],
+                $encodedText,
+            );
+
+            if ($decodedNodeTexts === null) {
+                $invalidSegments[] = $segmentIndex;
+
+                continue;
+            }
+
+            $nodeTexts = [...$nodeTexts, ...$decodedNodeTexts];
+        }
+
+        return [
+            'node_texts' => $nodeTexts,
+            'invalid_segments' => array_values(array_unique($invalidSegments)),
+            'glossary_hits' => (array) ($response['glossary_hits'] ?? []),
+            'risk_flags' => (array) ($response['risk_flags'] ?? []),
+            'notes' => (array) ($response['notes'] ?? []),
+            'provider_model' => data_get($response, 'meta.provider_model'),
+        ];
+    }
+
+    /**
+     * 将段级译文解码为节点级译文，失败时返回 null。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<int, array{
+     *      core_text: string
+     *  }>  $nodes
+     * @param  array{node_indexes: array<int, int>}  $segment
+     * @return array<int, string>|null
+     */
+    protected function translateHtmlSegmentResponseToNodeTexts(
+        TranslationJob $job,
+        array $nodes,
+        array $segment,
+        string $encodedText,
+    ): ?array {
+        $decoded = $this->htmlTextNodeTranslator->decodeSegmentNodeTexts($segment, $encodedText);
+        $expectedNodeIndexes = array_values((array) ($segment['node_indexes'] ?? []));
+
+        if (count($decoded) !== count($expectedNodeIndexes)) {
+            return null;
+        }
+
+        $normalized = [];
+
+        foreach ($expectedNodeIndexes as $nodeIndex) {
+            if (! array_key_exists($nodeIndex, $decoded)) {
+                return null;
+            }
+
+            $translatedText = $this->normalizeTranslatedOrdinalPrefix(
+                (string) ($nodes[$nodeIndex]['core_text'] ?? ''),
+                (string) $decoded[$nodeIndex],
+                $job->target_lang,
+            );
+
+            if ($this->translatedTextContainsSourceResidue($translatedText, $job->target_lang)) {
+                return null;
+            }
+
+            $normalized[$nodeIndex] = $translatedText;
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * 对失败的 HTML 语义段先缩小批次重试，再降级到单段翻译。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<int, array{
+     *      core_text: string
+     *  }>  $nodes
+     * @param  array<int, array{
+     *      node_indexes: array<int, int>,
+     *      source_text: string,
+     *      visible_length: int
+     *  }>  $segments
+     * @param  array<int, int>  $segmentIndexes
+     * @return array{
+     *      node_texts: array<int, string>,
+     *      glossary_hits: array<int, mixed>,
+     *      risk_flags: array<int, mixed>,
+     *      notes: array<int, mixed>,
+     *      fallback_segment_count: int,
+     *      provider_model: string|null
+     * }
+     */
+    protected function retryInvalidHtmlSegments(
+        TranslationJob $job,
+        array $nodes,
+        array $segments,
+        array $segmentIndexes,
+    ): array {
+        $segmentIndexes = array_values(array_unique($segmentIndexes));
+
+        if ($segmentIndexes === []) {
+            return [
+                'node_texts' => [],
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'fallback_segment_count' => 0,
+                'provider_model' => null,
+            ];
+        }
+
+        $nodeTexts = [];
+        $glossaryHits = [];
+        $riskFlags = [];
+        $notes = [];
+        $fallbackSegmentCount = 0;
+        $providerModel = null;
+        $remainingSegments = $segmentIndexes;
+
+        if (count($segmentIndexes) > 1) {
+            $retryBatches = $this->chunkHtmlSegments(
+                $segments,
+                $segmentIndexes,
+                self::ASYNC_HTML_RETRY_BATCH_TEXT_LIMIT,
+                self::ASYNC_HTML_RETRY_MAX_BATCH_SEGMENTS,
+            );
+
+            $requests = [];
+            foreach ($retryBatches as $batchIndex => $batchSegmentIndexes) {
+                $requests[$batchIndex] = $this->makeHtmlSegmentRequest($job, $segments, $batchSegmentIndexes, [
+                    'batch_index' => $batchIndex,
+                    'segment_count' => count($batchSegmentIndexes),
+                    'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                    'html_request_type' => 'segment_retry_batch',
+                ]);
+            }
+
+            $results = $this->gateway->translateDocumentsConcurrently(
+                $requests,
+                self::ASYNC_HTML_BATCH_PARALLELISM,
+                false,
+                true,
+            );
+
+            $remainingSegments = [];
+
+            foreach ($retryBatches as $batchIndex => $batchSegmentIndexes) {
+                if (! isset($results[$batchIndex]['response']) || ! is_array($results[$batchIndex]['response'])) {
+                    $remainingSegments = [...$remainingSegments, ...$batchSegmentIndexes];
+
+                    continue;
+                }
+
+                $parsed = $this->parseHtmlSegmentRequestResult(
+                    $job,
+                    $nodes,
+                    $segments,
+                    $batchSegmentIndexes,
+                    $results[$batchIndex]['response'],
+                );
+
+                $nodeTexts = [...$nodeTexts, ...$parsed['node_texts']];
+                $glossaryHits = [...$glossaryHits, ...$parsed['glossary_hits']];
+                $riskFlags = [...$riskFlags, ...$parsed['risk_flags']];
+                $notes = [...$notes, ...$parsed['notes']];
+                $providerModel ??= $parsed['provider_model'];
+                $remainingSegments = [...$remainingSegments, ...$parsed['invalid_segments']];
+            }
+
+            $remainingSegments = array_values(array_unique($remainingSegments));
+        }
+
+        if ($remainingSegments !== []) {
+            $requests = [];
+
+            foreach ($remainingSegments as $segmentIndex) {
+                $requests[$segmentIndex] = $this->makeHtmlSegmentRequest($job, $segments, [$segmentIndex], [
+                    'segment_count' => 1,
+                    'segment_index' => $segmentIndex,
+                    'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                    'html_request_type' => 'segment_single',
+                ]);
+            }
+
+            $results = $this->gateway->translateDocumentsConcurrently(
+                $requests,
+                self::ASYNC_HTML_BATCH_PARALLELISM,
+                false,
+                true,
+            );
+
+            foreach ($remainingSegments as $segmentIndex) {
+                if (! isset($results[$segmentIndex]['response']) || ! is_array($results[$segmentIndex]['response'])) {
+                    $fallbackSegmentCount++;
+
+                    continue;
+                }
+
+                $parsed = $this->parseHtmlSegmentRequestResult(
+                    $job,
+                    $nodes,
+                    $segments,
+                    [$segmentIndex],
+                    $results[$segmentIndex]['response'],
+                );
+
+                if ($parsed['invalid_segments'] !== []) {
+                    $fallbackSegmentCount++;
+
+                    continue;
+                }
+
+                $nodeTexts = [...$nodeTexts, ...$parsed['node_texts']];
+                $glossaryHits = [...$glossaryHits, ...$parsed['glossary_hits']];
+                $riskFlags = [...$riskFlags, ...$parsed['risk_flags']];
+                $notes = [...$notes, ...$parsed['notes']];
+                $providerModel ??= $parsed['provider_model'];
+            }
+        }
+
+        return [
+            'node_texts' => $nodeTexts,
+            'glossary_hits' => $glossaryHits,
+            'risk_flags' => $riskFlags,
+            'notes' => $notes,
+            'fallback_segment_count' => $fallbackSegmentCount,
+            'provider_model' => $providerModel,
+        ];
+    }
+
+    /**
+     * 组装 OpenClaw 翻译业务载荷，参数：$document 文档字段，$constraints 额外约束。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<string, string>  $document
+     * @param  array<string, mixed>  $constraints
+     * @return array<string, mixed>
+     */
+    protected function buildTranslationPayload(TranslationJob $job, array $document, array $constraints = []): array
+    {
+        return [
+            'task_type' => 'translation',
+            'task_subtype' => $job->document_type ?: 'chemical_news',
+            'input_document' => $document,
+            'context' => [
+                'source_lang' => $job->source_lang,
+                'target_lang' => $job->target_lang,
+                'glossary_entries' => [],
+                'constraints' => array_merge([
+                    'preserve_units' => true,
+                    'preserve_entities' => true,
+                ], $constraints),
             ],
+            'output_schema_version' => 'v1',
         ];
     }
 

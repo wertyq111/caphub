@@ -3,14 +3,21 @@
 namespace App\Clients\Ai\OpenClaw;
 
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Throwable;
 
 class OpenClawClient
 {
     protected const OUTPUT_SCHEMA_VERSION = 'v1';
 
     protected const DEFAULT_RETRY_TIMES = 1;
+
+    protected const OPERATOR_SCOPES_HEADER = 'x-openclaw-scopes';
+
+    protected const TRANSLATION_OPERATOR_SCOPES = 'operator.write';
 
     /**
      * 初始化 OpenClaw 客户端依赖，参数：$payloadBuilder 翻译请求载荷构建器。
@@ -88,6 +95,88 @@ class OpenClawClient
     }
 
     /**
+     * 并发发送多组翻译载荷并分别返回结果，参数：$requests 请求列表，$concurrency 最大并发数。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     * @param  array<array-key, array{
+     *     payload: array<string, mixed>,
+     *     enforce_target_language?: bool,
+     *     allow_partial_translated_document?: bool
+     * }>  $requests
+     * @return array<array-key, array{response?: array<string, mixed>, exception?: RuntimeException}>
+     */
+    public function sendTranslationPayloadsConcurrently(array $requests, int $concurrency = 4): array
+    {
+        if ($requests === []) {
+            return [];
+        }
+
+        $descriptors = [];
+
+        foreach ($requests as $key => $request) {
+            $payload = (array) ($request['payload'] ?? []);
+
+            $descriptors[$key] = [
+                'payload' => $payload,
+                'request_payload' => $this->openAiRequestPayload($payload),
+                'enforce_target_language' => (bool) ($request['enforce_target_language'] ?? true),
+                'allow_partial_translated_document' => (bool) ($request['allow_partial_translated_document'] ?? false),
+            ];
+        }
+
+        $translationUrl = $this->translationUrl();
+        $apiKey = $this->apiKey();
+        $timeout = $this->timeout();
+
+        $responses = $this->request()->pool(function (Pool $pool) use ($descriptors, $translationUrl, $apiKey, $timeout): void {
+            foreach ($descriptors as $key => $descriptor) {
+                $pool->as((string) $key)
+                    ->acceptJson()
+                    ->asJson()
+                    ->timeout($timeout)
+                    ->withHeaders([
+                        self::OPERATOR_SCOPES_HEADER => self::TRANSLATION_OPERATOR_SCOPES,
+                    ])
+                    ->withToken($apiKey)
+                    ->post($translationUrl, $descriptor['request_payload']);
+            }
+        }, max(1, $concurrency));
+
+        $results = [];
+
+        foreach ($descriptors as $key => $descriptor) {
+            $response = $responses[(string) $key] ?? $responses[$key] ?? null;
+
+            try {
+                if ($response instanceof Throwable) {
+                    throw $response;
+                }
+
+                if (! $response instanceof Response) {
+                    throw new RuntimeException('OpenClaw concurrent translation request did not return a response.');
+                }
+
+                $responsePayload = $response->throw()->json() ?? [];
+
+                $results[$key] = [
+                    'response' => $this->validateTranslationResponse(
+                        $this->normalizeResponsePayload($responsePayload),
+                        $descriptor['payload'],
+                        $descriptor['enforce_target_language'],
+                        $descriptor['allow_partial_translated_document'],
+                    ),
+                ];
+            } catch (Throwable $throwable) {
+                $results[$key] = [
+                    'exception' => $this->toRuntimeException($throwable),
+                ];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
      * 创建 HTTP 请求实例，参数：无（内部读取配置）。
      * @since 2026-04-02
      * @author zhouxufeng
@@ -102,6 +191,9 @@ class OpenClawClient
             ->acceptJson()
             ->asJson()
             ->timeout($timeout)
+            ->withHeaders([
+                self::OPERATOR_SCOPES_HEADER => self::TRANSLATION_OPERATOR_SCOPES,
+            ])
             ->withToken($apiKey);
     }
 
@@ -113,6 +205,16 @@ class OpenClawClient
     protected function translationPath(): string
     {
         return '/v1/chat/completions';
+    }
+
+    /**
+     * 获取翻译接口完整 URL，参数：无。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     */
+    protected function translationUrl(): string
+    {
+        return $this->baseUrl().$this->translationPath();
     }
 
     /**
@@ -181,6 +283,22 @@ class OpenClawClient
         }
 
         return $translationAgent;
+    }
+
+    /**
+     * 规范化 OpenClaw HTTP 兼容接口要求的模型标识，参数：无。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     */
+    protected function translationModel(): string
+    {
+        $translationAgent = $this->translationAgent();
+
+        if ($translationAgent === 'openclaw' || str_starts_with($translationAgent, 'openclaw/')) {
+            return $translationAgent;
+        }
+
+        return 'openclaw/'.$translationAgent;
     }
 
     /**
@@ -334,8 +452,16 @@ class OpenClawClient
             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
         ];
 
+        $preservePlaceholders = (array) data_get($payload, 'context.constraints.preserve_placeholders', []);
+
+        if ($preservePlaceholders !== []) {
+            $instructions[] = 'Preserve every placeholder token exactly as provided in the source text.';
+            $instructions[] = 'Do not translate, remove, reorder, or alter placeholder tokens in any way.';
+            $instructions[] = 'Placeholder tokens: '.implode(', ', $preservePlaceholders);
+        }
+
         return [
-            'model' => $this->translationAgent(),
+            'model' => $this->translationModel(),
             'stream' => false,
             'messages' => [
                 [
@@ -451,5 +577,19 @@ class OpenClawClient
         return str_contains($message, 'OpenClaw completion content is not valid JSON.')
             || str_contains($message, 'OpenClaw completion content must be a JSON object.')
             || str_contains($message, 'OpenClaw response payload must be a JSON object.');
+    }
+
+    /**
+     * 规范化并发请求中捕获到的异常对象，参数：$throwable 原始异常。
+     * @since 2026-04-10
+     * @author zhouxufeng
+     */
+    protected function toRuntimeException(Throwable $throwable): RuntimeException
+    {
+        if ($throwable instanceof RuntimeException) {
+            return $throwable;
+        }
+
+        return new RuntimeException($throwable->getMessage(), (int) $throwable->getCode(), $throwable);
     }
 }

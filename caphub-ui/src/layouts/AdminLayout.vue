@@ -183,6 +183,10 @@ function signOut() {
 </template>
 
 <style scoped>
+:deep(.admin-table) {
+  padding: 0 1rem 1rem;
+}
+
 :deep(.el-table) {
   --el-table-border-color: #e2e8f0;
   --el-table-header-bg-color: #f8fafc;
@@ -206,5 +210,11 @@ function signOut() {
 
 :deep(.el-descriptions__content) {
   color: #0f172a;
+}
+
+@media (min-width: 640px) {
+  :deep(.admin-table) {
+    padding-inline: 1.5rem;
+  }
 }
 </style>

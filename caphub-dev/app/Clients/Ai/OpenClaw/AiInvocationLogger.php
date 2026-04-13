@@ -22,12 +22,13 @@ class AiInvocationLogger
         ?string $skillVersion = null,
         ?int $tokenUsageEstimate = null,
         ?string $errorMessage = null,
+        ?array $context = null,
     ): AiInvocation {
         return AiInvocation::create([
             'job_id' => $jobId,
             'agent_name' => $agentName,
             'skill_version' => $skillVersion,
-            'request_payload' => $this->summarizeRequest($requestPayload),
+            'request_payload' => $this->summarizeRequest($requestPayload, $context),
             'response_payload_summary' => $this->summarizeResponse($responsePayload),
             'status' => $status,
             'duration_ms' => $durationMs,
@@ -42,12 +43,12 @@ class AiInvocationLogger
      * @since 2026-04-02
      * @author zhouxufeng
      */
-    protected function summarizeRequest(array $requestPayload): array
+    protected function summarizeRequest(array $requestPayload, ?array $context = null): array
     {
         $document = (array) Arr::get($requestPayload, 'input_document', []);
         $glossaryEntries = (array) Arr::get($requestPayload, 'context.glossary_entries', []);
 
-        return [
+        $summary = [
             'task_type' => Arr::get($requestPayload, 'task_type'),
             'task_subtype' => Arr::get($requestPayload, 'task_subtype'),
             'output_schema_version' => Arr::get($requestPayload, 'output_schema_version'),
@@ -58,6 +59,12 @@ class AiInvocationLogger
             'glossary_entries_count' => count($glossaryEntries),
             'constraints' => Arr::get($requestPayload, 'context.constraints', []),
         ];
+
+        if (is_array($context) && $context !== []) {
+            $summary['execution_context'] = $context;
+        }
+
+        return $summary;
     }
 
     /**
