@@ -6,6 +6,8 @@ use App\Http\Controllers\Admin\GlossaryController;
 use App\Http\Controllers\Admin\TranslationJobController;
 use App\Http\Controllers\Admin\TranslationProviderController;
 use App\Http\Controllers\Demo\AsyncTranslationController;
+use App\Http\Controllers\Demo\DashboardStatsController;
+use App\Http\Controllers\Demo\HermesChatController;
 use App\Http\Controllers\Demo\ShowTranslationJobController;
 use App\Http\Controllers\Demo\ShowTranslationResultController;
 use App\Http\Controllers\Demo\SyncTranslationController;
@@ -14,6 +16,11 @@ use Illuminate\Support\Facades\Route;
 Route::get('/ping', function () {
     return response()->json(['ok' => true]);
 });
+
+Route::get('/demo/dashboard/stats', DashboardStatsController::class);
+
+Route::post('/demo/chat', HermesChatController::class)
+    ->middleware('throttle:demo-sync-translation');
 
 Route::post('/demo/translate/sync', SyncTranslationController::class)
     ->middleware('throttle:demo-sync-translation');

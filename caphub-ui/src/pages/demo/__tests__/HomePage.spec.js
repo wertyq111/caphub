@@ -1,6 +1,11 @@
 import { mount, RouterLinkStub } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import HomePage from '../HomePage.vue';
+
+vi.mock('../../../api/dashboard', () => ({
+  fetchDashboardStats: vi.fn().mockRejectedValue(new Error('no api')),
+  sendChatMessage: vi.fn().mockResolvedValue({ reply: 'ok' }),
+}));
 
 describe('HomePage', () => {
   it('renders the matrix hub hero and translation entry', () => {
@@ -12,8 +17,9 @@ describe('HomePage', () => {
       },
     });
 
-    expect(wrapper.text()).toContain('AI 控制矩阵');
-    expect(wrapper.text()).toContain('翻译中心');
-    expect(wrapper.text()).toContain('系统核心');
+    expect(wrapper.text()).toContain('代理网络 Nexus');
+    expect(wrapper.text()).toContain('系统核心控制台');
+    expect(wrapper.text()).toContain('NEURAL LINK');
+    expect(wrapper.text()).toContain('系统脉搏');
   });
 });

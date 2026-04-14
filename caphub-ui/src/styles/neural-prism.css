@@ -1,0 +1,210 @@
+/**
+ * Neural Prism Design System
+ * Scoped to .neural-prism — does NOT affect /admin/ pages.
+ */
+
+/* ── Fonts ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+.neural-prism {
+  /* ── Surface Hierarchy ── */
+  --np-background: #0d0e17;
+  --np-surface-dim: #101120;
+  --np-surface-container-low: #12131d;
+  --np-surface-container: #181924;
+  --np-surface-container-high: #1e1f2e;
+  --np-surface-container-highest: #252636;
+  --np-surface-bright: #2a2b3a;
+  --np-surface-tint: rgba(153, 247, 255, 0.04);
+
+  /* ── Primary (Cyan) ── */
+  --np-primary: #99f7ff;
+  --np-primary-dim: #5ee3ef;
+  --np-primary-container: #0d4f55;
+  --np-on-primary: #003338;
+
+  /* ── Secondary (Purple) ── */
+  --np-secondary: #ac89ff;
+  --np-secondary-dim: #8b6ad8;
+  --np-secondary-container: #7000ff;
+  --np-on-secondary: #1a0040;
+
+  /* ── Tertiary (Fuchsia) ── */
+  --np-tertiary: #f472b6;
+  --np-tertiary-dim: #d946ef;
+  --np-tertiary-container: #6b1a4a;
+
+  /* ── Semantic ── */
+  --np-success: #4ade80;
+  --np-success-dim: #22c55e;
+  --np-warning: #fbbf24;
+  --np-error: #f87171;
+
+  /* ── Text ── */
+  --np-on-surface: #f1effd;
+  --np-on-surface-variant: #a8a6b8;
+  --np-outline: #3d3e50;
+  --np-outline-variant: #2a2b3c;
+
+  /* ── Typography ── */
+  --np-font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --np-font-body: 'Inter', 'PingFang SC', 'Hiragino Sans GB', system-ui, sans-serif;
+  --np-font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+  /* ── Ambient Glow Shadows ── */
+  --np-glow-primary: 0 0 48px rgba(153, 247, 255, 0.08);
+  --np-glow-primary-strong: 0 0 60px rgba(153, 247, 255, 0.15);
+  --np-glow-secondary: 0 0 48px rgba(172, 137, 255, 0.08);
+  --np-glow-secondary-strong: 0 0 60px rgba(172, 137, 255, 0.15);
+  --np-glow-tertiary: 0 0 48px rgba(244, 114, 182, 0.08);
+
+  /* ── Ghost Border Gradient ── */
+  --np-ghost-border: linear-gradient(135deg, rgba(153, 247, 255, 0.2), rgba(172, 137, 255, 0.2));
+  --np-ghost-border-hover: linear-gradient(135deg, rgba(153, 247, 255, 0.4), rgba(172, 137, 255, 0.4));
+
+  /* ── Spacing & Radius ── */
+  --np-radius-sm: 0.5rem;
+  --np-radius-md: 0.75rem;
+  --np-radius-lg: 1rem;
+  --np-radius-xl: 1.25rem;
+  --np-radius-2xl: 1.5rem;
+
+  /* ── Base Styles ── */
+  background-color: var(--np-background);
+  color: var(--np-on-surface);
+  font-family: var(--np-font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Typography Utilities ── */
+.neural-prism .np-font-display {
+  font-family: var(--np-font-display);
+  letter-spacing: -0.02em;
+}
+
+.neural-prism .np-font-mono {
+  font-family: var(--np-font-mono);
+  font-feature-settings: 'tnum';
+}
+
+/* ── Glass Card ── */
+.neural-prism .np-glass {
+  background: rgba(13, 14, 23, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* Ghost border via pseudo-element */
+.neural-prism .np-ghost-border {
+  position: relative;
+}
+
+.neural-prism .np-ghost-border::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--np-ghost-border);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask-composite: exclude;
+  -webkit-mask-composite: xor;
+  pointer-events: none;
+  transition: background 0.3s ease;
+}
+
+.neural-prism .np-ghost-border:hover::before {
+  background: var(--np-ghost-border-hover);
+}
+
+/* ── Sweep Animation ── */
+@keyframes np-sweep {
+  0% {
+    transform: translateX(-100%) rotate(45deg);
+  }
+  100% {
+    transform: translateX(300%) rotate(45deg);
+  }
+}
+
+.neural-prism .np-sweep {
+  position: relative;
+  overflow: hidden;
+}
+
+.neural-prism .np-sweep::after {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 40%;
+  height: 200%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.08),
+    transparent
+  );
+  animation: np-sweep 3s ease-in-out infinite;
+}
+
+/* ── Surface Utility Classes ── */
+.neural-prism .np-surface-dim {
+  background-color: var(--np-surface-dim);
+}
+
+.neural-prism .np-surface-low {
+  background-color: var(--np-surface-container-low);
+}
+
+.neural-prism .np-surface-base {
+  background-color: var(--np-surface-container);
+}
+
+.neural-prism .np-surface-high {
+  background-color: var(--np-surface-container-high);
+}
+
+.neural-prism .np-surface-bright {
+  background-color: var(--np-surface-bright);
+}
+
+/* ── Card Hover Effect ── */
+.neural-prism .np-card-hover {
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.neural-prism .np-card-hover:hover {
+  transform: scale(1.01);
+}
+
+/* ── Scrollbar (scoped) ── */
+.neural-prism ::-webkit-scrollbar {
+  width: 4px;
+}
+
+.neural-prism ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.neural-prism ::-webkit-scrollbar-thumb {
+  background: var(--np-outline);
+  border-radius: 4px;
+}
+
+/* ── Status dot pulse ── */
+@keyframes np-pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 8px currentColor;
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 16px currentColor;
+  }
+}
+
+.neural-prism .np-dot-pulse {
+  animation: np-pulse-dot 2s ease-in-out infinite;
+}
