@@ -53,4 +53,9 @@ return [
         'chat_profile' => env('HERMES_CHAT_PROFILE', 'caphub-assistant'),
     ],
 
+    'translation' => [
+        'sync_short_text_provider' => env('SYNC_SHORT_TEXT_PROVIDER', 'hermes'),
+        'sync_short_text_max_length' => (int) env('SYNC_SHORT_TEXT_MAX_LENGTH', 3),
+    ],
+
 ];

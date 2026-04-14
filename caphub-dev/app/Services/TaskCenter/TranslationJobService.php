@@ -4,6 +4,7 @@ namespace App\Services\TaskCenter;
 
 use App\Enums\TranslationJobStatus;
 use App\Models\TranslationJob;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 
 class TranslationJobService
@@ -44,23 +45,27 @@ class TranslationJobService
         return $job->refresh();
     }
 
-    public function markSucceeded(TranslationJob $job): TranslationJob
+    public function markSucceeded(TranslationJob $job, ?Carbon $finishedAt = null): TranslationJob
     {
         $job->forceFill([
             'status' => TranslationJobStatus::Succeeded,
             'failure_reason' => null,
-            'finished_at' => now(),
+            'finished_at' => $finishedAt ?? now(),
         ])->save();
 
         return $job->refresh();
     }
 
-    public function markFailed(TranslationJob $job, ?string $failureReason = null): TranslationJob
+    public function markFailed(
+        TranslationJob $job,
+        ?string $failureReason = null,
+        ?Carbon $finishedAt = null,
+    ): TranslationJob
     {
         $job->forceFill([
             'status' => TranslationJobStatus::Failed,
             'failure_reason' => $failureReason,
-            'finished_at' => now(),
+            'finished_at' => $finishedAt ?? now(),
         ])->save();
 
         return $job->refresh();

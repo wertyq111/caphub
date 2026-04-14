@@ -42,7 +42,10 @@ it('returns a translated text document for the sync translation endpoint', funct
         ->assertJsonPath('translated_document.text', 'Ethylene prices rose.')
         ->assertJsonPath('meta.schema_version', 'v1');
 
+    $job = \App\Models\TranslationJob::query()->firstOrFail();
+
     $this->assertDatabaseHas('ai_invocations', [
+        'job_id' => $job->id,
         'agent_name' => 'chemical-news-translator',
         'status' => 'success',
     ]);

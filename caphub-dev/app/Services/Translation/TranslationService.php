@@ -3,8 +3,10 @@
 namespace App\Services\Translation;
 
 use App\Enums\TranslationJobStatus;
+use App\Enums\TranslationProvider;
 use App\Models\DemoAccessLog;
 use App\Models\TranslationJob;
+use App\Services\TaskCenter\TranslationJobService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -42,6 +44,7 @@ class TranslationService
      */
     public function __construct(
         protected TranslationGatewayRouter $gateway,
+        protected TranslationJobService $translationJobService,
         protected TranslationModeResolver $modeResolver,
         protected TranslationResultPersister $resultPersister,
         protected GlossaryHitPersister $glossaryHitPersister,
@@ -57,11 +60,12 @@ class TranslationService
      */
     public function translateSync(array $normalizedRequest): array
     {
-        $cacheKey = $this->syncCacheKey($normalizedRequest);
-        $lockSeconds = $this->syncCacheLockSeconds();
-        $waitSeconds = $this->syncCacheLockWaitSeconds();
+        $provider = $this->gateway->syncProvider($normalizedRequest);
+        $cacheKey = $this->syncCacheKey($normalizedRequest, $provider);
+        $lockSeconds = $this->syncCacheLockSeconds($provider);
+        $waitSeconds = $this->syncCacheLockWaitSeconds($provider);
 
-        return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest) {
+        return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest, $provider) {
             $cachedResponse = Cache::get($cacheKey);
 
             if (is_array($cachedResponse)) {
@@ -71,32 +75,37 @@ class TranslationService
             }
 
             $startedAt = now();
+            $job = $this->createSyncJob($normalizedRequest, $startedAt);
 
-            $response = $this->gateway->translatePayload(
-                (array) $normalizedRequest['openclaw_payload'],
-                null,
-            );
-
-            $finishedAt = now();
-
-            $result = DB::transaction(function () use ($normalizedRequest, $response, $startedAt, $finishedAt) {
-                $job = $this->createSyncJob($normalizedRequest, $startedAt, $finishedAt);
-
-                $this->resultPersister->persist($job, $response, false);
-                $this->glossaryHitPersister->persistForJob(
-                    $job,
-                    (array) ($response['glossary_hits'] ?? []),
-                    $normalizedRequest['domain'] ?? null,
+            try {
+                $response = $this->gateway->translatePayloadForProvider(
+                    $provider,
+                    (array) $normalizedRequest['openclaw_payload'],
+                    $job->id,
                 );
+                $finishedAt = now();
 
-                $this->recordDemoAccess('sync_translation_cache_miss', $job->id);
+                $result = DB::transaction(function () use ($normalizedRequest, $response, $job, $finishedAt) {
+                    $this->resultPersister->persist($job, $response, false);
+                    $this->glossaryHitPersister->persistForJob(
+                        $job,
+                        (array) ($response['glossary_hits'] ?? []),
+                        $normalizedRequest['domain'] ?? null,
+                    );
+                    $this->translationJobService->markSucceeded($job, $finishedAt);
+                    $this->recordDemoAccess('sync_translation_cache_miss', $job->id);
 
-                return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($response, false));
-            });
+                    return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($response, false));
+                });
 
-            Cache::put($cacheKey, $response, now()->addHour());
+                Cache::put($cacheKey, $response, now()->addHour());
 
-            return $result;
+                return $result;
+            } catch (Throwable $throwable) {
+                $this->translationJobService->markFailed($job, $throwable->getMessage(), now());
+
+                throw $throwable;
+            }
         });
     }
 
@@ -105,9 +114,9 @@ class TranslationService
      * @since 2026-04-09
      * @author zhouxufeng
      */
-    protected function syncCacheLockSeconds(): int
+    protected function syncCacheLockSeconds(TranslationProvider $provider): int
     {
-        $upstreamTimeout = $this->gateway->timeout();
+        $upstreamTimeout = $this->gateway->timeout($provider);
 
         return max($upstreamTimeout + 15, 45);
     }
@@ -117,9 +126,9 @@ class TranslationService
      * @since 2026-04-09
      * @author zhouxufeng
      */
-    protected function syncCacheLockWaitSeconds(): int
+    protected function syncCacheLockWaitSeconds(TranslationProvider $provider): int
     {
-        return max($this->syncCacheLockSeconds() - 5, 10);
+        return max($this->syncCacheLockSeconds($provider) - 5, 10);
     }
 
     /**
@@ -203,14 +212,14 @@ class TranslationService
      * @author zhouxufeng
      * @param  array<string, mixed>  $normalizedRequest
      */
-    protected function syncCacheKey(array $normalizedRequest): string
+    protected function syncCacheKey(array $normalizedRequest, TranslationProvider $provider): string
     {
         return 'demo:sync-translation:'.hash('sha256', json_encode([
             'input_type' => $normalizedRequest['input_type'] ?? 'plain_text',
             'document_type' => $normalizedRequest['document_type'] ?? null,
             'openclaw_payload' => $normalizedRequest['openclaw_payload'] ?? [],
-            'translation_provider' => $this->gateway->activeProvider()->value,
-            'translation_agent' => $this->gateway->activeAgent(),
+            'translation_provider' => $provider->value,
+            'translation_agent' => $this->gateway->agentForProvider($provider),
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
     }
 
@@ -239,14 +248,14 @@ class TranslationService
     protected function createSyncJob(
         array $normalizedRequest,
         ?\Illuminate\Support\Carbon $startedAt = null,
-        ?\Illuminate\Support\Carbon $finishedAt = null,
     ): TranslationJob {
         $now = now();
 
         return TranslationJob::query()->create([
             'job_uuid' => (string) Str::uuid(),
             'mode' => $this->modeResolver->resolve($normalizedRequest),
-            'status' => TranslationJobStatus::Succeeded,
+            'status' => TranslationJobStatus::Processing,
+            'failure_reason' => null,
             'input_type' => $normalizedRequest['input_type'] ?? 'plain_text',
             'document_type' => $normalizedRequest['document_type'] ?? null,
             'source_lang' => $normalizedRequest['source_lang'] ?? '',
@@ -256,7 +265,6 @@ class TranslationService
             'source_summary' => $normalizedRequest['source_summary'] ?? null,
             'source_body' => $normalizedRequest['source_body'] ?? null,
             'started_at' => $startedAt ?? $now,
-            'finished_at' => $finishedAt ?? $now,
         ]);
     }
 
