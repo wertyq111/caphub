@@ -5,8 +5,10 @@ namespace App\Services\Translation;
 use App\Enums\TranslationJobStatus;
 use App\Models\DemoAccessLog;
 use App\Models\TranslationJob;
+use App\Services\TaskCenter\TranslationJobService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
@@ -33,7 +35,9 @@ class TranslationService
 
     protected const ASYNC_HTML_RETRY_MAX_BATCH_SEGMENTS = 6;
 
-    protected const ASYNC_HTML_BATCH_PARALLELISM = 4;
+    protected const ASYNC_JOB_TIMEOUT_SECONDS = 900;
+
+    protected const ASYNC_JOB_TIMEOUT_GUARD_RATIO = 0.85;
 
     /**
      * 初始化翻译服务依赖，参数：客户端、模式解析、结果持久化与术语命中持久化服务。
@@ -42,6 +46,7 @@ class TranslationService
      */
     public function __construct(
         protected TranslationGatewayRouter $gateway,
+        protected TranslationJobService $translationJobService,
         protected TranslationModeResolver $modeResolver,
         protected TranslationResultPersister $resultPersister,
         protected GlossaryHitPersister $glossaryHitPersister,
@@ -60,43 +65,54 @@ class TranslationService
         $cacheKey = $this->syncCacheKey($normalizedRequest);
         $lockSeconds = $this->syncCacheLockSeconds();
         $waitSeconds = $this->syncCacheLockWaitSeconds();
+        $cacheContext = $this->syncCacheContext($normalizedRequest, $cacheKey);
 
-        return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest) {
+        return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest, $cacheContext) {
             $cachedResponse = Cache::get($cacheKey);
 
             if (is_array($cachedResponse)) {
+                Log::info('sync_translation_cache_hit', $cacheContext);
                 $this->recordDemoAccess('sync_translation_cache_hit');
 
                 return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($cachedResponse, true));
             }
 
+            Log::info('sync_translation_cache_miss', $cacheContext);
             $startedAt = now();
+            $job = $this->createSyncJob($normalizedRequest, $startedAt);
 
-            $response = $this->gateway->translatePayload(
-                (array) $normalizedRequest['openclaw_payload'],
-                null,
-            );
-
-            $finishedAt = now();
-
-            $result = DB::transaction(function () use ($normalizedRequest, $response, $startedAt, $finishedAt) {
-                $job = $this->createSyncJob($normalizedRequest, $startedAt, $finishedAt);
-
-                $this->resultPersister->persist($job, $response, false);
-                $this->glossaryHitPersister->persistForJob(
-                    $job,
-                    (array) ($response['glossary_hits'] ?? []),
-                    $normalizedRequest['domain'] ?? null,
+            try {
+                $response = $this->gateway->translatePayload(
+                    (array) $normalizedRequest['openclaw_payload'],
+                    $job->id,
                 );
+                $finishedAt = now();
 
-                $this->recordDemoAccess('sync_translation_cache_miss', $job->id);
+                $result = DB::transaction(function () use ($normalizedRequest, $response, $job, $finishedAt) {
+                    $this->resultPersister->persist($job, $response, false);
+                    $this->glossaryHitPersister->persistForJob(
+                        $job,
+                        (array) ($response['glossary_hits'] ?? []),
+                        $normalizedRequest['domain'] ?? null,
+                    );
+                    $this->translationJobService->markSucceeded($job, $finishedAt);
+                    $this->recordDemoAccess('sync_translation_cache_miss', $job->id);
 
-                return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($response, false));
-            });
+                    return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($response, false));
+                });
 
-            Cache::put($cacheKey, $response, now()->addHour());
+                $stored = Cache::put($cacheKey, $response, now()->addHour());
+                Log::info('sync_translation_cache_store', array_merge($cacheContext, [
+                    'stored' => $stored,
+                    'job_id' => $job->id,
+                ]));
 
-            return $result;
+                return $result;
+            } catch (Throwable $throwable) {
+                $this->translationJobService->markFailed($job, $throwable->getMessage(), now());
+
+                throw $throwable;
+            }
         });
     }
 
@@ -215,6 +231,40 @@ class TranslationService
     }
 
     /**
+     * 组装同步缓存观测上下文，避免后续再靠猜缓存为什么 miss。
+     * @since 2026-04-14
+     * @author zhouxufeng
+     * @param  array<string, mixed>  $normalizedRequest
+     * @return array<string, mixed>
+     */
+    protected function syncCacheContext(array $normalizedRequest, string $cacheKey): array
+    {
+        return [
+            'cache_key_hash' => hash('sha256', $cacheKey),
+            'provider' => $this->gateway->activeProvider()->value,
+            'agent' => $this->gateway->activeAgent(),
+            'input_type' => $normalizedRequest['input_type'] ?? 'plain_text',
+            'document_type' => $normalizedRequest['document_type'] ?? null,
+            'source_lang' => $normalizedRequest['source_lang'] ?? null,
+            'target_lang' => $normalizedRequest['target_lang'] ?? null,
+            'document_keys' => array_keys((array) ($normalizedRequest['input_document'] ?? [])),
+            'document_lengths' => $this->syncDocumentLengths((array) ($normalizedRequest['input_document'] ?? [])),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $document
+     * @return array<string, int>
+     */
+    protected function syncDocumentLengths(array $document): array
+    {
+        return collect($document)
+            ->filter(static fn (mixed $value): bool => is_string($value))
+            ->map(static fn (string $value): int => mb_strlen($value))
+            ->all();
+    }
+
+    /**
      * 为响应补充缓存命中标记，参数：$response 原响应，$cacheHit 是否命中缓存。
      * @since 2026-04-02
      * @author zhouxufeng
@@ -239,14 +289,14 @@ class TranslationService
     protected function createSyncJob(
         array $normalizedRequest,
         ?\Illuminate\Support\Carbon $startedAt = null,
-        ?\Illuminate\Support\Carbon $finishedAt = null,
     ): TranslationJob {
         $now = now();
 
         return TranslationJob::query()->create([
             'job_uuid' => (string) Str::uuid(),
             'mode' => $this->modeResolver->resolve($normalizedRequest),
-            'status' => TranslationJobStatus::Succeeded,
+            'status' => TranslationJobStatus::Processing,
+            'failure_reason' => null,
             'input_type' => $normalizedRequest['input_type'] ?? 'plain_text',
             'document_type' => $normalizedRequest['document_type'] ?? null,
             'source_lang' => $normalizedRequest['source_lang'] ?? '',
@@ -256,7 +306,6 @@ class TranslationService
             'source_summary' => $normalizedRequest['source_summary'] ?? null,
             'source_body' => $normalizedRequest['source_body'] ?? null,
             'started_at' => $startedAt ?? $now,
-            'finished_at' => $finishedAt ?? $now,
         ]);
     }
 
@@ -323,16 +372,21 @@ class TranslationService
     protected function translateChunkedAsyncPlainText(TranslationJob $job, string $text): array
     {
         $chunks = $this->splitPlainTextIntoChunks($text);
+        $this->assertWithinAsyncJobBudget($job, count($chunks), 1, 'sequential_chunks');
         $translatedChunks = [];
         $glossaryHits = [];
         $riskFlags = [];
         $notes = [];
+        $providerLatencyMs = 0;
+        $retryCount = 0;
         $meta = [
             'schema_version' => 'v1',
             'provider_model' => $this->gateway->activeAgent(),
             'provider' => $this->gateway->activeProvider()->value,
             'chunked' => true,
             'chunk_count' => count($chunks),
+            'segment_count' => count($chunks),
+            'provider_dispatch_mode' => 'sequential_chunks',
         ];
 
         foreach ($chunks as $chunk) {
@@ -346,8 +400,15 @@ class TranslationService
             $glossaryHits = [...$glossaryHits, ...(array) ($response['glossary_hits'] ?? [])];
             $riskFlags = [...$riskFlags, ...(array) ($response['risk_flags'] ?? [])];
             $notes = [...$notes, ...(array) ($response['notes'] ?? [])];
+            $providerLatencyMs += $this->metaInt($response, 'provider_latency_ms');
+            $retryCount += $this->metaInt($response, 'retry_count');
             $meta = array_merge($meta, array_filter((array) ($response['meta'] ?? []), static fn ($value, $key): bool => $key !== 'schema_version', ARRAY_FILTER_USE_BOTH));
         }
+
+        $meta['provider_latency_ms'] = $providerLatencyMs;
+        $meta['retry_count'] = $retryCount;
+        $meta['segment_count'] = count($chunks);
+        $meta['provider_dispatch_mode'] = 'sequential_chunks';
 
         return [
             'translated_document' => [
@@ -421,6 +482,10 @@ class TranslationService
         $glossaryHits = [];
         $riskFlags = [];
         $notes = [];
+        $providerLatencyMs = 0;
+        $retryCount = 0;
+        $segmentCount = 0;
+        $dispatchMode = $htmlFields !== [] ? 'bounded_concurrent' : 'single';
         $meta = [
             'schema_version' => 'v1',
             'provider_model' => $this->gateway->activeAgent(),
@@ -439,6 +504,9 @@ class TranslationService
 
             $translatedDocument = array_merge($translatedDocument, (array) ($response['translated_document'] ?? []));
             $this->mergeTranslationSignals($response, $glossaryHits, $riskFlags, $notes);
+            $providerLatencyMs += $this->metaInt($response, 'provider_latency_ms');
+            $retryCount += $this->metaInt($response, 'retry_count');
+            $dispatchMode = $this->metaString($response, 'provider_dispatch_mode', $dispatchMode);
             $meta = array_merge(
                 $meta,
                 array_filter((array) ($response['meta'] ?? []), static fn ($value, $key): bool => $key !== 'schema_version', ARRAY_FILTER_USE_BOTH),
@@ -449,6 +517,10 @@ class TranslationService
             $htmlTranslation = $this->translateAsyncHtmlContent($job, (string) $inputDocument[$field]);
             $translatedDocument[$field] = $htmlTranslation['text'];
             $this->mergeTranslationSignals($htmlTranslation, $glossaryHits, $riskFlags, $notes);
+            $providerLatencyMs += $this->metaInt($htmlTranslation, 'provider_latency_ms');
+            $retryCount += $this->metaInt($htmlTranslation, 'retry_count');
+            $segmentCount += $this->metaInt($htmlTranslation, 'segment_count');
+            $dispatchMode = $this->metaString($htmlTranslation, 'provider_dispatch_mode', $dispatchMode);
 
             foreach ((array) ($htmlTranslation['meta'] ?? []) as $metaKey => $metaValue) {
                 if ($metaKey === 'schema_version' || $metaKey === 'provider_model') {
@@ -458,6 +530,11 @@ class TranslationService
                 $meta[$field.'_'.$metaKey] = $metaValue;
             }
         }
+
+        $meta['provider_latency_ms'] = $providerLatencyMs;
+        $meta['retry_count'] = $retryCount;
+        $meta['segment_count'] = $segmentCount;
+        $meta['provider_dispatch_mode'] = $dispatchMode;
 
         return [
             'translated_document' => $translatedDocument,
@@ -511,10 +588,14 @@ class TranslationService
                 'html_strategy' => 'semantic_segment_parallel',
                 'html_segment_count' => count($compiled['segments']),
                 'html_batch_count' => $translation['batch_count'],
-                'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                'html_parallelism' => $this->htmlBatchParallelism(),
                 'html_fallback_segment_count' => $translation['fallback_segment_count'],
                 'translated_text_nodes' => $translatedTextNodes,
                 'fallback_text_nodes' => $fallbackTextNodes,
+                'provider_latency_ms' => $translation['provider_latency_ms'],
+                'retry_count' => $translation['retry_count'],
+                'segment_count' => count($compiled['segments']),
+                'provider_dispatch_mode' => 'bounded_concurrent',
             ],
         ];
     }
@@ -582,7 +663,9 @@ class TranslationService
      *      notes: array<int, mixed>,
      *      batch_count: int,
      *      fallback_segment_count: int,
-     *      provider_model: string|null
+     *      provider_model: string|null,
+     *      provider_latency_ms: int,
+     *      retry_count: int
      * }
      */
     protected function translateHtmlSegmentBatches(TranslationJob $job, array $nodes, array $segments): array
@@ -596,24 +679,28 @@ class TranslationService
                 'batch_count' => 0,
                 'fallback_segment_count' => 0,
                 'provider_model' => null,
+                'provider_latency_ms' => 0,
+                'retry_count' => 0,
             ];
         }
 
         $batches = $this->chunkHtmlSegments($segments);
+        $parallelism = $this->htmlBatchParallelism();
+        $this->assertWithinAsyncJobBudget($job, count($batches), $parallelism, 'bounded_concurrent');
         $requests = [];
 
         foreach ($batches as $batchIndex => $segmentIndexes) {
             $requests[$batchIndex] = $this->makeHtmlSegmentRequest($job, $segments, $segmentIndexes, [
                 'batch_index' => $batchIndex,
                 'segment_count' => count($segmentIndexes),
-                'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                'html_parallelism' => $parallelism,
                 'html_request_type' => 'segment_batch',
             ]);
         }
 
         $results = $this->gateway->translateDocumentsConcurrently(
             $requests,
-            self::ASYNC_HTML_BATCH_PARALLELISM,
+            $parallelism,
             false,
             true,
         );
@@ -624,6 +711,8 @@ class TranslationService
         $notes = [];
         $fallbackSegmentCount = 0;
         $providerModel = null;
+        $providerLatencyMs = 0;
+        $retryCount = 0;
 
         foreach ($batches as $batchIndex => $segmentIndexes) {
             $consumed = $this->consumeHtmlSegmentRequestResult(
@@ -638,6 +727,8 @@ class TranslationService
             $this->mergeTranslationSignals($consumed, $glossaryHits, $riskFlags, $notes);
             $fallbackSegmentCount += $consumed['fallback_segment_count'];
             $providerModel ??= $consumed['provider_model'];
+            $providerLatencyMs += $consumed['provider_latency_ms'];
+            $retryCount += $consumed['retry_count'];
         }
 
         return [
@@ -648,6 +739,8 @@ class TranslationService
             'batch_count' => count($batches),
             'fallback_segment_count' => $fallbackSegmentCount,
             'provider_model' => $providerModel,
+            'provider_latency_ms' => $providerLatencyMs,
+            'retry_count' => $retryCount,
         ];
     }
 
@@ -717,7 +810,9 @@ class TranslationService
      *      risk_flags: array<int, mixed>,
      *      notes: array<int, mixed>,
      *      fallback_segment_count: int,
-     *      provider_model: string|null
+     *      provider_model: string|null,
+     *      provider_latency_ms: int,
+     *      retry_count: int
      * }
      */
     protected function consumeHtmlSegmentRequestResult(
@@ -736,6 +831,8 @@ class TranslationService
                 'risk_flags' => [],
                 'notes' => [],
                 'provider_model' => null,
+                'provider_latency_ms' => 0,
+                'retry_count' => 0,
             ];
 
         $retry = $this->retryInvalidHtmlSegments(
@@ -752,6 +849,8 @@ class TranslationService
             'notes' => [...$parsed['notes'], ...$retry['notes']],
             'fallback_segment_count' => $retry['fallback_segment_count'],
             'provider_model' => $parsed['provider_model'] ?? $retry['provider_model'],
+            'provider_latency_ms' => $parsed['provider_latency_ms'] + $retry['provider_latency_ms'],
+            'retry_count' => $parsed['retry_count'] + $retry['retry_count'],
         ];
     }
 
@@ -775,7 +874,9 @@ class TranslationService
      *      glossary_hits: array<int, mixed>,
      *      risk_flags: array<int, mixed>,
      *      notes: array<int, mixed>,
-     *      provider_model: string|null
+     *      provider_model: string|null,
+     *      provider_latency_ms: int,
+     *      retry_count: int
      * }
      */
     protected function parseHtmlSegmentRequestResult(
@@ -822,6 +923,8 @@ class TranslationService
             'risk_flags' => (array) ($response['risk_flags'] ?? []),
             'notes' => (array) ($response['notes'] ?? []),
             'provider_model' => data_get($response, 'meta.provider_model'),
+            'provider_latency_ms' => $this->metaInt($response, 'provider_latency_ms'),
+            'retry_count' => $this->metaInt($response, 'retry_count'),
         ];
     }
 
@@ -890,7 +993,9 @@ class TranslationService
      *      risk_flags: array<int, mixed>,
      *      notes: array<int, mixed>,
      *      fallback_segment_count: int,
-     *      provider_model: string|null
+     *      provider_model: string|null,
+     *      provider_latency_ms: int,
+     *      retry_count: int
      * }
      */
     protected function retryInvalidHtmlSegments(
@@ -909,6 +1014,8 @@ class TranslationService
                 'notes' => [],
                 'fallback_segment_count' => 0,
                 'provider_model' => null,
+                'provider_latency_ms' => 0,
+                'retry_count' => 0,
             ];
         }
 
@@ -918,7 +1025,10 @@ class TranslationService
         $notes = [];
         $fallbackSegmentCount = 0;
         $providerModel = null;
+        $providerLatencyMs = 0;
+        $retryCount = 0;
         $remainingSegments = $segmentIndexes;
+        $parallelism = $this->htmlBatchParallelism();
 
         if (count($segmentIndexes) > 1) {
             $retryBatches = $this->chunkHtmlSegments(
@@ -933,14 +1043,14 @@ class TranslationService
                 $requests[$batchIndex] = $this->makeHtmlSegmentRequest($job, $segments, $batchSegmentIndexes, [
                     'batch_index' => $batchIndex,
                     'segment_count' => count($batchSegmentIndexes),
-                    'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                    'html_parallelism' => $parallelism,
                     'html_request_type' => 'segment_retry_batch',
                 ]);
             }
 
             $results = $this->gateway->translateDocumentsConcurrently(
                 $requests,
-                self::ASYNC_HTML_BATCH_PARALLELISM,
+                $parallelism,
                 false,
                 true,
             );
@@ -967,6 +1077,8 @@ class TranslationService
                 $riskFlags = [...$riskFlags, ...$parsed['risk_flags']];
                 $notes = [...$notes, ...$parsed['notes']];
                 $providerModel ??= $parsed['provider_model'];
+                $providerLatencyMs += $parsed['provider_latency_ms'];
+                $retryCount += $parsed['retry_count'];
                 $remainingSegments = [...$remainingSegments, ...$parsed['invalid_segments']];
             }
 
@@ -980,14 +1092,14 @@ class TranslationService
                 $requests[$segmentIndex] = $this->makeHtmlSegmentRequest($job, $segments, [$segmentIndex], [
                     'segment_count' => 1,
                     'segment_index' => $segmentIndex,
-                    'html_parallelism' => self::ASYNC_HTML_BATCH_PARALLELISM,
+                    'html_parallelism' => $parallelism,
                     'html_request_type' => 'segment_single',
                 ]);
             }
 
             $results = $this->gateway->translateDocumentsConcurrently(
                 $requests,
-                self::ASYNC_HTML_BATCH_PARALLELISM,
+                $parallelism,
                 false,
                 true,
             );
@@ -1018,6 +1130,8 @@ class TranslationService
                 $riskFlags = [...$riskFlags, ...$parsed['risk_flags']];
                 $notes = [...$notes, ...$parsed['notes']];
                 $providerModel ??= $parsed['provider_model'];
+                $providerLatencyMs += $parsed['provider_latency_ms'];
+                $retryCount += $parsed['retry_count'];
             }
         }
 
@@ -1028,6 +1142,8 @@ class TranslationService
             'notes' => $notes,
             'fallback_segment_count' => $fallbackSegmentCount,
             'provider_model' => $providerModel,
+            'provider_latency_ms' => $providerLatencyMs,
+            'retry_count' => $retryCount,
         ];
     }
 
@@ -1500,6 +1616,53 @@ class TranslationService
         $notes = [...$notes, ...(array) ($response['notes'] ?? [])];
     }
 
+    protected function htmlBatchParallelism(): int
+    {
+        return max(1, $this->gateway->htmlParallelism());
+    }
+
+    protected function assertWithinAsyncJobBudget(
+        TranslationJob $job,
+        int $estimatedRequests,
+        int $parallelism,
+        string $dispatchMode,
+    ): void {
+        $estimatedRequests = max(1, $estimatedRequests);
+        $parallelism = max(1, $parallelism);
+        $budgetSeconds = (int) floor(self::ASYNC_JOB_TIMEOUT_SECONDS * self::ASYNC_JOB_TIMEOUT_GUARD_RATIO);
+        $estimatedRuntimeSeconds = (int) ceil($estimatedRequests / $parallelism) * max(1, $this->gateway->timeout());
+
+        if ($estimatedRuntimeSeconds < $budgetSeconds) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'job_budget_exceeded: estimated provider runtime [%ds] exceeds the async worker budget [%ds] for provider [%s] using [%s].',
+            $estimatedRuntimeSeconds,
+            $budgetSeconds,
+            $this->gateway->activeProvider()->value,
+            $dispatchMode,
+        ));
+    }
+
+    /**
+     * @param  array<string, mixed>  $response
+     */
+    protected function metaInt(array $response, string $key): int
+    {
+        return max(0, (int) data_get($response, 'meta.'.$key, 0));
+    }
+
+    /**
+     * @param  array<string, mixed>  $response
+     */
+    protected function metaString(array $response, string $key, string $default): string
+    {
+        $value = data_get($response, 'meta.'.$key);
+
+        return is_string($value) && $value !== '' ? $value : $default;
+    }
+
     /**
      * 将长文本按段落与长度限制拆分为多个片段，参数：$text 原始文本。
      * @since 2026-04-02
@@ -1631,15 +1794,20 @@ class TranslationService
         $chunks = mb_strlen($text) > self::ASYNC_TEXT_CHUNK_SIZE
             ? $this->splitOversizedParagraph($text)
             : [$text];
+        $this->assertWithinAsyncJobBudget($job, count($chunks), 1, 'sequential_text_chunks');
 
         $translatedChunks = [];
         $glossaryHits = [];
         $riskFlags = [];
         $notes = [];
+        $providerLatencyMs = 0;
+        $retryCount = 0;
         $meta = [
             'schema_version' => 'v1',
             'provider_model' => $this->gateway->activeAgent(),
             'provider' => $this->gateway->activeProvider()->value,
+            'segment_count' => count($chunks),
+            'provider_dispatch_mode' => count($chunks) > 1 ? 'sequential_text_chunks' : 'single',
         ];
 
         foreach ($chunks as $chunk) {
@@ -1653,8 +1821,15 @@ class TranslationService
             $glossaryHits = [...$glossaryHits, ...(array) ($response['glossary_hits'] ?? [])];
             $riskFlags = [...$riskFlags, ...(array) ($response['risk_flags'] ?? [])];
             $notes = [...$notes, ...(array) ($response['notes'] ?? [])];
+            $providerLatencyMs += $this->metaInt($response, 'provider_latency_ms');
+            $retryCount += $this->metaInt($response, 'retry_count');
             $meta = array_merge($meta, array_filter((array) ($response['meta'] ?? []), static fn ($value, $key): bool => $key !== 'schema_version', ARRAY_FILTER_USE_BOTH));
         }
+
+        $meta['provider_latency_ms'] = $providerLatencyMs;
+        $meta['retry_count'] = $retryCount;
+        $meta['segment_count'] = count($chunks);
+        $meta['provider_dispatch_mode'] = count($chunks) > 1 ? 'sequential_text_chunks' : 'single';
 
         return [
             'translated_document' => [

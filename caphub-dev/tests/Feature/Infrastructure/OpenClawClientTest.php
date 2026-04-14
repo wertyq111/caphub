@@ -108,8 +108,60 @@ it('posts a translation payload to OpenClaw and returns the response structure',
         'meta' => [
             'schema_version' => 'v1',
             'provider_model' => 'openclaw',
+            'retry_count' => 0,
+            'upstream_http_status' => 200,
         ],
     ]);
+    expect(data_get($response, 'meta.upstream_http_status'))->toBe(200);
+});
+
+it('defaults the OpenClaw translation agent to chemical-news-translator when omitted', function () {
+    config()->set('services.openclaw', [
+        'base_url' => 'https://openclaw.example.test',
+        'api_key' => 'test-api-key',
+        'timeout' => 30,
+    ]);
+
+    Http::fake([
+        '*' => Http::response([
+            'id' => 'chatcmpl_test',
+            'object' => 'chat.completion',
+            'created' => 1_775_111_081,
+            'model' => 'openclaw',
+            'choices' => [[
+                'index' => 0,
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => json_encode([
+                        'translated_document' => [
+                            'text' => 'Ethylene prices rose.',
+                        ],
+                        'glossary_hits' => [],
+                        'risk_flags' => [],
+                        'notes' => [],
+                        'meta' => [
+                            'schema_version' => 'v1',
+                        ],
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ],
+                'finish_reason' => 'stop',
+            ]],
+        ], 200),
+    ]);
+
+    app(OpenClawClient::class)->translate([
+        'text' => '乙烯价格上涨。',
+        'source_lang' => 'zh',
+        'target_lang' => 'en',
+    ]);
+
+    Http::assertSent(function (Request $request) {
+        $payload = json_decode($request->body(), true);
+
+        expect($payload['model'])->toBe('openclaw/chemical-news-translator');
+
+        return true;
+    });
 });
 
 it('includes plain text field when building translation payload for text input', function () {
@@ -254,6 +306,8 @@ it('allows lenient translation payloads to omit some translated document keys', 
         'meta' => [
             'schema_version' => 'v1',
             'provider_model' => 'openclaw',
+            'retry_count' => 0,
+            'upstream_http_status' => 200,
         ],
     ]);
 });

@@ -55,10 +55,14 @@ class OpenClawTranslationGateway
         $startedAt = microtime(true);
 
         try {
-            $response = $this->client->sendTranslationPayload(
-                $payload,
-                $enforceTargetLanguage,
-                $allowPartialTranslatedDocument,
+            $response = $this->decorateResponse(
+                $this->client->sendTranslationPayload(
+                    $payload,
+                    $enforceTargetLanguage,
+                    $allowPartialTranslatedDocument,
+                ),
+                $this->durationInMs($startedAt),
+                'single',
             );
             $this->safeLogTranslation(
                 agentName: $this->translationAgent(),
@@ -133,8 +137,15 @@ class OpenClawTranslationGateway
             $payload = (array) ($request['payload'] ?? []);
             $jobId = array_key_exists('job_id', $request) ? $request['job_id'] : null;
             $context = (array) ($request['context'] ?? []);
+            $dispatchMode = $concurrency > 1 ? 'bounded_concurrent' : 'single';
 
             if (isset($result['response']) && is_array($result['response'])) {
+                $result['response'] = $this->decorateResponse(
+                    $result['response'],
+                    $this->durationInMs($startedAt[$key] ?? microtime(true)),
+                    $dispatchMode,
+                );
+                $results[$key] = $result;
                 $this->safeLogTranslation(
                     agentName: $this->translationAgent(),
                     requestPayload: $payload,
@@ -169,6 +180,11 @@ class OpenClawTranslationGateway
         return $results;
     }
 
+    public function htmlParallelism(): int
+    {
+        return max(1, (int) config('services.openclaw.html_parallelism', 2));
+    }
+
     /**
      * 获取当前翻译 Agent 标识，参数：无。
      * @since 2026-04-02
@@ -181,7 +197,7 @@ class OpenClawTranslationGateway
 
     public function timeout(): int
     {
-        return max(1, (int) config('services.openclaw.timeout', 30));
+        return max(1, (int) config('services.openclaw.timeout', 45));
     }
 
     /**
@@ -192,6 +208,16 @@ class OpenClawTranslationGateway
     protected function durationInMs(float $startedAt): int
     {
         return (int) round((microtime(true) - $startedAt) * 1000);
+    }
+
+    protected function decorateResponse(array $response, int $durationMs, string $dispatchMode): array
+    {
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
+            'provider_latency_ms' => max(0, $durationMs),
+            'provider_dispatch_mode' => $dispatchMode,
+        ]);
+
+        return $response;
     }
 
     /**

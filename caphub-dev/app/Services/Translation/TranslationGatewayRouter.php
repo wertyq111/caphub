@@ -77,6 +77,11 @@ class TranslationGatewayRouter
         return $this->activeGateway()->timeout();
     }
 
+    public function htmlParallelism(): int
+    {
+        return $this->activeGateway()->htmlParallelism();
+    }
+
     protected function activeGateway(): OpenClawTranslationGateway|HermesTranslationGateway
     {
         return match ($this->settings->current()) {
