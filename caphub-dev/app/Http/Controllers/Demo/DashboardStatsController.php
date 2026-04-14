@@ -45,7 +45,7 @@ class DashboardStatsController extends Controller
 
         $throughput = AiInvocation::query()
             ->where('created_at', '>=', now()->subHours(12))
-            ->selectRaw("strftime('%Y-%m-%d %H:00:00', created_at) as hour_bucket")
+            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00') as hour_bucket")
             ->selectRaw('COUNT(*) as request_count')
             ->selectRaw('AVG(duration_ms) as avg_duration_ms')
             ->groupBy('hour_bucket')

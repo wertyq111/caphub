@@ -61,7 +61,7 @@ class HermesChatController extends Controller
                 ->asJson()
                 ->timeout($timeout)
                 ->withToken($apiKey)
-                ->post('/chat/completions', [
+                ->post('/v1/chat/completions', [
                     'model' => $profile,
                     'stream' => false,
                     'messages' => $messages,

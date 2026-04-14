@@ -48,6 +48,7 @@ return [
         'profile' => env('HERMES_PROFILE', 'chemical-news-translator'),
         'model' => env('HERMES_MODEL', 'gpt-5-mini'),
         'timeout' => (int) env('HERMES_TIMEOUT', 120),
+        'chat_profile' => env('HERMES_CHAT_PROFILE', 'caphub-assistant'),
     ],
 
 ];
