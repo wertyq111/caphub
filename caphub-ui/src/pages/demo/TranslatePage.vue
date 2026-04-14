@@ -1,14 +1,26 @@
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { RouterLink } from 'vue-router';
 import TranslationInputPanel from '../../components/demo/TranslationInputPanel.vue';
 import CapabilitySidebar from '../../components/public/CapabilitySidebar.vue';
 import AppErrorState from '../../components/shared/AppErrorState.vue';
 import { submitSyncTranslation } from '../../api/translation';
+import { fetchDashboardStats } from '../../api/dashboard';
 
 const errorMessage = ref('');
 const loading = ref(false);
 const translationResult = ref(null);
+const activeAgent = ref('');
+
+onMounted(async () => {
+  try {
+    const data = await fetchDashboardStats();
+    const active = data.agents?.find(a => a.active);
+    activeAgent.value = active?.name ?? '';
+  } catch {
+    activeAgent.value = '';
+  }
+});
 
 const sidebarSections = [
   {
@@ -54,27 +66,31 @@ async function handleSubmit(payload) {
 
 <template>
   <div class="space-y-4">
-    <div class="flex items-center justify-between rounded-xl border border-cyan-300/20 bg-slate-950/70 px-4 py-2.5">
+    <!-- Status bar -->
+    <div class="flex items-center justify-between rounded-[var(--np-radius-xl)] np-glass px-4 py-2.5">
       <div class="flex items-center gap-3">
-        <span class="h-2 w-2 rounded-full bg-emerald-300 shadow-[0_0_10px_rgba(52,211,153,0.7)]" />
-        <span class="text-xs font-medium uppercase tracking-[0.2em] text-cyan-100/70">Translation Workbench</span>
-        <span class="text-xs text-slate-400">chemical-news-translator · Sync-first</span>
+        <span class="np-dot-pulse h-2 w-2 rounded-full bg-[var(--np-success)] text-[var(--np-success)]" />
+        <span class="np-font-mono text-xs font-medium uppercase tracking-[0.2em] text-[var(--np-primary)]" style="opacity: 0.7;">Translation Workbench</span>
+        <span class="text-xs text-[var(--np-on-surface-variant)]">chemical-news-translator · Sync-first</span>
       </div>
-      <RouterLink to="/" class="text-xs text-slate-400 transition hover:text-cyan-300">← 返回首页</RouterLink>
+      <RouterLink to="/" class="text-xs text-[var(--np-on-surface-variant)] no-underline transition hover:text-[var(--np-primary)]">← 返回首页</RouterLink>
     </div>
 
+    <!-- Title -->
     <div class="text-center">
-      <h1 class="text-3xl font-bold text-cyan-50 sm:text-4xl" style="text-shadow: 0 0 40px rgba(34,211,238,0.4)">
+      <h1 class="np-font-display text-3xl font-bold text-[var(--np-on-surface)] sm:text-4xl" style="text-shadow: 0 0 50px rgba(153,247,255,0.25);">
         智能翻译工作台
       </h1>
-      <p class="mt-2 text-sm text-slate-400">专业化工资讯翻译 · 同步响应 · 即时结果预览</p>
+      <p class="mt-2 text-sm text-[var(--np-on-surface-variant)]">专业化工资讯翻译 · 同步响应 · 即时结果预览</p>
     </div>
 
+    <!-- Main content -->
     <div id="translation-workbench" class="mx-auto grid max-w-6xl gap-4 xl:grid-cols-[minmax(0,1.5fr)_260px]">
       <section class="space-y-3">
         <TranslationInputPanel
           :loading="loading"
           :translation-result="translationResult"
+          :active-agent="activeAgent"
           @mode-change="handleModeChange"
           @submit="handleSubmit"
         />

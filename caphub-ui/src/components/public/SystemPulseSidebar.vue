@@ -45,7 +45,7 @@ function statusColor(status) {
 <template>
   <aside class="flex flex-col gap-4">
     <!-- Header -->
-    <div class="rounded-[var(--np-radius-xl)] bg-[var(--np-surface-container-low)] p-4">
+    <div class="rounded-[var(--np-radius-xl)] np-glass-feature p-4">
       <div class="flex items-center gap-2">
         <span class="text-lg text-[var(--np-tertiary)]">📈</span>
         <h2 class="np-font-display text-xl font-semibold text-[var(--np-on-surface)]">系统脉搏</h2>
@@ -53,7 +53,7 @@ function statusColor(status) {
     </div>
 
     <!-- Throughput -->
-    <div class="rounded-[var(--np-radius-xl)] bg-[var(--np-surface-container)] p-4">
+    <div class="rounded-[var(--np-radius-xl)] np-glass-strong p-4">
       <div class="flex items-baseline justify-between">
         <span class="text-xs text-[var(--np-on-surface-variant)]">总合吐量</span>
         <span class="np-font-mono text-2xl font-bold text-[var(--np-on-surface)]">
@@ -84,7 +84,7 @@ function statusColor(status) {
     </div>
 
     <!-- Real-time Logs -->
-    <div class="flex-1 rounded-[var(--np-radius-xl)] bg-[var(--np-surface-container)] p-4">
+    <div class="flex-1 rounded-[var(--np-radius-xl)] np-glass-strong p-4">
       <h3 class="mb-3 text-xs font-semibold uppercase tracking-wider text-[var(--np-on-surface-variant)]">
         实时日志点距趋势
       </h3>

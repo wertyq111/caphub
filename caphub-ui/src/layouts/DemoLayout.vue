@@ -5,11 +5,8 @@ import '../styles/neural-prism.css';
 
 <template>
   <div class="neural-prism relative min-h-screen overflow-hidden text-[var(--np-on-surface)]">
-    <div class="pointer-events-none absolute inset-0">
-      <div class="absolute left-[-12rem] top-[-10rem] h-[28rem] w-[28rem] rounded-full bg-[rgba(153,247,255,0.06)] blur-[120px]" />
-      <div class="absolute right-[-8rem] top-[8rem] h-[22rem] w-[22rem] rounded-full bg-[rgba(172,137,255,0.05)] blur-[100px]" />
-      <div class="absolute bottom-[-10rem] left-1/2 h-[24rem] w-[24rem] -translate-x-1/2 rounded-full bg-[rgba(153,247,255,0.03)] blur-[120px]" />
-    </div>
+    <!-- Cyberpunk background mesh -->
+    <div class="np-bg-mesh" />
 
     <div class="relative z-10">
       <PublicHeader />

@@ -1,50 +1,75 @@
 <script setup>
 import { computed } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
+import { useAuthStore } from '../../stores/auth';
 
 const route = useRoute();
+const auth = useAuthStore();
 
 const navigationItems = [
-  { label: '首页', to: '/' },
-  { label: '翻译演示', to: '/demo/translate' },
+  { label: '首页', to: '/', icon: '◈' },
+  { label: '翻译演示', to: '/demo/translate', icon: '⬡' },
 ];
 
 const isTranslatePage = computed(() => route.path.startsWith('/demo/translate'));
 </script>
 
 <template>
-  <header class="sticky top-0 z-30 border-b border-white/10 bg-slate-950/80 backdrop-blur-xl">
-    <div class="mx-auto flex max-w-7xl items-center justify-between gap-6 px-6 py-4">
-      <RouterLink to="/" class="flex items-center gap-3 text-white">
-        <div class="flex h-11 w-11 items-center justify-center rounded-2xl border border-sky-400/30 bg-sky-400/15 text-lg font-semibold text-sky-200 shadow-[0_0_30px_rgba(14,165,233,0.18)]">
-          C
+  <header class="sticky top-0 z-30 np-glass-strong" style="border-bottom: 1px solid rgba(153,247,255,0.06);">
+    <div class="mx-auto flex max-w-[1600px] items-center justify-between gap-6 px-6 py-3 lg:px-8">
+      <!-- Brand -->
+      <RouterLink to="/" class="flex items-center gap-3 text-white no-underline">
+        <div class="relative flex h-10 w-10 items-center justify-center rounded-xl np-glass-feature">
+          <span class="np-font-display text-lg font-bold text-[var(--np-primary)]">C</span>
+          <div class="absolute inset-0 rounded-xl" style="box-shadow: 0 0 20px rgba(153,247,255,0.15);" />
         </div>
         <div>
-          <div class="text-xs uppercase tracking-[0.35em] text-sky-200/70">Caphub</div>
-          <div class="text-sm font-medium text-slate-200">AI 控制矩阵</div>
+          <div class="np-font-display text-[10px] font-semibold uppercase tracking-[0.4em] text-[var(--np-primary)]" style="opacity: 0.8;">CapHub</div>
+          <div class="text-xs font-medium text-[var(--np-on-surface-variant)]">AI 控制矩阵</div>
         </div>
       </RouterLink>
 
-      <nav class="hidden items-center gap-2 md:flex">
+      <!-- Navigation -->
+      <nav class="hidden items-center gap-1 md:flex">
         <RouterLink
           v-for="item in navigationItems"
           :key="item.to"
           :to="item.to"
-          class="rounded-full px-4 py-2 text-sm transition"
+          class="flex items-center gap-2 rounded-[var(--np-radius-md)] px-4 py-2 text-sm no-underline transition-all duration-200"
           :class="route.path === item.to
-            ? 'bg-white/12 text-white'
-            : 'text-slate-300 hover:bg-white/6 hover:text-white'"
+            ? 'np-glass-feature text-[var(--np-primary)]'
+            : 'text-[var(--np-on-surface-variant)] hover:text-[var(--np-on-surface)] hover:bg-white/[0.04]'"
         >
+          <span class="text-xs">{{ item.icon }}</span>
           {{ item.label }}
         </RouterLink>
       </nav>
 
-      <RouterLink
-        to="/demo/translate"
-        class="inline-flex items-center rounded-full border border-sky-300/25 bg-sky-400 px-4 py-2 text-sm font-medium text-slate-950 shadow-[0_10px_40px_rgba(56,189,248,0.35)] transition hover:-translate-y-0.5 hover:bg-sky-300"
-      >
-        {{ isTranslatePage ? '返回工作台' : '进入翻译工作台' }}
-      </RouterLink>
+      <!-- Right actions -->
+      <div class="flex items-center gap-3">
+        <!-- Auth status -->
+        <template v-if="auth.isAuthenticated">
+          <span class="hidden items-center gap-2 text-xs text-[var(--np-on-surface-variant)] sm:flex">
+            <span class="np-dot-pulse h-2 w-2 rounded-full bg-[var(--np-success)] text-[var(--np-success)]" />
+            {{ auth.user?.name || auth.user?.email || '已登录' }}
+          </span>
+        </template>
+        <RouterLink
+          v-else
+          to="/admin/login"
+          class="np-btn-secondary text-xs no-underline"
+        >
+          登录
+        </RouterLink>
+
+        <!-- CTA -->
+        <RouterLink
+          to="/demo/translate"
+          class="np-btn-cta !px-4 !py-2 !text-sm no-underline"
+        >
+          {{ isTranslatePage ? '返回工作台' : '翻译工作台' }}
+        </RouterLink>
+      </div>
     </div>
   </header>
 </template>

@@ -70,7 +70,7 @@ function statusDotColor(statusColor) {
     </h2>
 
     <div v-if="loading" class="grid gap-4 md:grid-cols-3">
-      <div v-for="i in 3" :key="i" class="h-44 animate-pulse rounded-[var(--np-radius-xl)] bg-[var(--np-surface-container)]" />
+      <div v-for="i in 3" :key="i" class="h-44 animate-pulse rounded-[var(--np-radius-xl)] np-glass" />
     </div>
 
     <div v-else class="grid gap-4 md:grid-cols-3">
@@ -79,8 +79,7 @@ function statusDotColor(statusColor) {
         :key="card.key"
         :is="card.to ? RouterLink : 'div'"
         :to="card.to || undefined"
-        class="np-ghost-border np-card-hover group rounded-[var(--np-radius-xl)] bg-[var(--np-surface-container)] p-5 transition-shadow"
-        :style="{ boxShadow: 'var(--np-glow-' + card.accent + ')' }"
+        class="np-ghost-border np-card-hover group rounded-[var(--np-radius-xl)] np-glass-feature p-5 no-underline"
       >
         <!-- Icon -->
         <div

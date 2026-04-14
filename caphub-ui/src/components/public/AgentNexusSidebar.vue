@@ -33,7 +33,7 @@ function getTypeLabel(agent) {
 <template>
   <aside class="flex flex-col gap-4">
     <!-- Header -->
-    <div class="rounded-[var(--np-radius-xl)] bg-[var(--np-surface-container-low)] p-4">
+    <div class="rounded-[var(--np-radius-xl)] np-glass-feature p-4">
       <div class="flex items-center gap-2">
         <span class="text-lg">✦</span>
         <h2 class="np-font-display text-xl font-semibold text-[var(--np-on-surface)]">代理网络 Nexus</h2>
@@ -45,14 +45,14 @@ function getTypeLabel(agent) {
 
     <!-- Agent Cards -->
     <div v-if="loading" class="space-y-3">
-      <div v-for="i in 2" :key="i" class="h-28 animate-pulse rounded-[var(--np-radius-lg)] bg-[var(--np-surface-container)]" />
+      <div v-for="i in 2" :key="i" class="h-28 animate-pulse rounded-[var(--np-radius-lg)] np-glass" />
     </div>
 
     <div v-else class="space-y-3">
       <article
         v-for="agent in agents"
         :key="agent.key"
-        class="np-ghost-border np-card-hover rounded-[var(--np-radius-xl)] bg-[var(--np-surface-container)] p-4"
+        class="np-ghost-border np-card-hover rounded-[var(--np-radius-xl)] np-glass-strong p-4"
       >
         <div class="flex items-start gap-3">
           <!-- Avatar -->
