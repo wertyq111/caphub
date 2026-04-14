@@ -115,7 +115,7 @@ it('posts a translation payload to OpenClaw and returns the response structure',
     expect(data_get($response, 'meta.upstream_http_status'))->toBe(200);
 });
 
-it('defaults the OpenClaw translation agent to github-copilot gpt-5-mini when omitted', function () {
+it('defaults the OpenClaw translation agent to chemical-news-translator when omitted', function () {
     config()->set('services.openclaw', [
         'base_url' => 'https://openclaw.example.test',
         'api_key' => 'test-api-key',
@@ -158,7 +158,7 @@ it('defaults the OpenClaw translation agent to github-copilot gpt-5-mini when om
     Http::assertSent(function (Request $request) {
         $payload = json_decode($request->body(), true);
 
-        expect($payload['model'])->toBe('openclaw/github-copilot/gpt-5-mini');
+        expect($payload['model'])->toBe('openclaw/chemical-news-translator');
 
         return true;
     });

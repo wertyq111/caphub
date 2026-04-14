@@ -192,7 +192,7 @@ class OpenClawTranslationGateway
      */
     public function translationAgent(): string
     {
-        return (string) config('services.openclaw.translation_agent', 'github-copilot/gpt-5-mini');
+        return (string) config('services.openclaw.translation_agent', 'chemical-news-translator');
     }
 
     public function timeout(): int
