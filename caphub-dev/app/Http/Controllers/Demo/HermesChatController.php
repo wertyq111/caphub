@@ -19,8 +19,8 @@ class HermesChatController extends Controller
             'history.*.content' => ['required_with:history', 'string', 'max:2000'],
         ]);
 
-        $baseUrl = trim((string) config('services.hermes.base_url', ''));
-        $apiKey = trim((string) config('services.hermes.api_key', ''));
+        $baseUrl = trim((string) config('services.hermes.chat_base_url', config('services.hermes.base_url', '')));
+        $apiKey = trim((string) config('services.hermes.chat_api_key', config('services.hermes.api_key', '')));
         $profile = config('services.hermes.chat_profile', 'caphub-assistant');
         $timeout = max(1, (int) config('services.hermes.timeout', 120));
 
