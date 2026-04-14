@@ -106,8 +106,11 @@ class HermesChatController extends Controller
             $url = trim((string) $ep['url']);
             if ($url === '') continue;
 
+            // Strip trailing /v1 or /v1/ if present to avoid double-path
+            $url = preg_replace('#/v1/?$#', '', rtrim($url, '/'));
+
             try {
-                $resp = Http::baseUrl(rtrim($url, '/'))
+                $resp = Http::baseUrl($url)
                     ->acceptJson()
                     ->timeout(min($timeout, 10))
                     ->withToken($apiKey)
