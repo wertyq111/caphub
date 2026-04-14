@@ -190,16 +190,37 @@ function signOut() {
 :deep(.el-table) {
   --el-table-border-color: #e2e8f0;
   --el-table-header-bg-color: #f8fafc;
-  --el-table-row-hover-bg-color: #f8fbff;
+  --el-table-row-hover-bg-color: #f0f7ff;
+  font-size: 13px;
 }
 
 :deep(.el-table th.el-table__cell) {
-  color: #64748b;
+  color: #475569;
   font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 14px 12px;
 }
 
 :deep(.el-table td.el-table__cell) {
-  color: #0f172a;
+  color: #1e293b;
+  padding: 12px 12px;
+}
+
+:deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
+  background: #fafbfc;
+}
+
+:deep(.el-table .el-table__row:hover > td.el-table__cell) {
+  background-color: #f0f7ff !important;
+}
+
+:deep(.el-tag--small) {
+  font-size: 11px;
+  height: 22px;
+  line-height: 20px;
+  padding: 0 8px;
 }
 
 :deep(.el-descriptions__label) {

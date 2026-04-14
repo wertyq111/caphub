@@ -90,6 +90,40 @@ export function getInvocationCounts(summary = {}) {
   };
 }
 
+export function formatDuration(startedAt, finishedAt) {
+  if (!startedAt || !finishedAt) {
+    return '--';
+  }
+
+  const start = new Date(startedAt);
+  const end = new Date(finishedAt);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return '--';
+  }
+
+  const ms = end - start;
+  if (ms < 0) {
+    return '--';
+  }
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+export function formatDurationMs(durationMs) {
+  if (typeof durationMs !== 'number' || Number.isNaN(durationMs) || durationMs < 0) {
+    return '--';
+  }
+
+  if (durationMs < 1000) {
+    return `${Math.round(durationMs)}ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
 export function resolveRequestError(error, fallback = 'Something went wrong.') {
   return error?.response?.data?.message ?? fallback;
 }

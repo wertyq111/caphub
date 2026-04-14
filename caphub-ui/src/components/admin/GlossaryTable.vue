@@ -20,44 +20,44 @@ const { t } = useAdminI18n();
 <template>
   <div class="admin-table">
     <el-table :data="rows" stripe>
-      <el-table-column prop="id" :label="t('glossary.table.id')" width="90" />
+      <el-table-column prop="id" :label="t('glossary.table.id')" width="70" />
       <el-table-column
         :label="t('glossary.table.term')"
         min-width="280"
       >
         <template #default="{ row }">
-          <div class="space-y-2 py-1">
-            <p class="text-sm font-semibold text-slate-950">{{ row.term }}</p>
-            <p class="text-sm leading-6 text-slate-500">{{ row.standard_translation }}</p>
+          <div class="space-y-1.5 py-1">
+            <p class="text-sm font-semibold text-slate-900">{{ row.term }}</p>
+            <p class="text-sm leading-relaxed text-slate-500">{{ row.standard_translation }}</p>
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('glossary.table.languageDirection')" width="140">
+      <el-table-column :label="t('glossary.table.languageDirection')" width="130" align="center">
         <template #default="{ row }">
-          <el-tag effect="plain" round>
-            {{ row.source_lang }} -> {{ row.target_lang }}
+          <el-tag size="small" effect="light" round>
+            {{ row.source_lang }} → {{ row.target_lang }}
           </el-tag>
         </template>
       </el-table-column>
       <el-table-column :label="t('glossary.table.rule')" min-width="220">
         <template #default="{ row }">
-          <div class="space-y-2 py-1">
+          <div class="space-y-1.5 py-1">
             <p class="text-sm font-medium text-slate-700">{{ startCase(row.domain) }}</p>
             <p class="text-xs text-slate-500">P{{ row.priority ?? '--' }}</p>
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('glossary.table.status')" width="120">
+      <el-table-column :label="t('glossary.table.status')" width="110" align="center">
         <template #default="{ row }">
-          <el-tag :type="row.status === 'active' ? 'success' : 'info'">
+          <el-tag size="small" effect="light" round :type="row.status === 'active' ? 'success' : 'info'">
             {{ row.status === 'active' ? t('statuses.active') : t('statuses.inactive') }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('common.actions')" width="190" fixed="right">
+      <el-table-column :label="t('common.actions')" width="150" fixed="right" align="center">
         <template #default="{ row }">
-          <div class="flex items-center gap-2">
-            <el-button size="small" @click="emit('edit', row)">{{ t('common.edit') }}</el-button>
+          <div class="flex items-center justify-center gap-1">
+            <el-button size="small" type="primary" text @click="emit('edit', row)">{{ t('common.edit') }}</el-button>
             <el-popconfirm
               :title="t('glossary.deletePrompt', { term: row.term })"
               @confirm="emit('delete', row)"
@@ -66,7 +66,7 @@ const { t } = useAdminI18n();
                 <el-button
                   size="small"
                   type="danger"
-                  plain
+                  text
                   :loading="deletingId === row.id"
                 >
                   {{ t('common.delete') }}

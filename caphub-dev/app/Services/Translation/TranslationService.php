@@ -70,13 +70,17 @@ class TranslationService
                 return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($cachedResponse, true));
             }
 
+            $startedAt = now();
+
             $response = $this->gateway->translatePayload(
                 (array) $normalizedRequest['openclaw_payload'],
                 null,
             );
 
-            $result = DB::transaction(function () use ($normalizedRequest, $response) {
-                $job = $this->createSyncJob($normalizedRequest);
+            $finishedAt = now();
+
+            $result = DB::transaction(function () use ($normalizedRequest, $response, $startedAt, $finishedAt) {
+                $job = $this->createSyncJob($normalizedRequest, $startedAt, $finishedAt);
 
                 $this->resultPersister->persist($job, $response, false);
                 $this->glossaryHitPersister->persistForJob(
@@ -227,13 +231,16 @@ class TranslationService
     }
 
     /**
-     * 创建同步翻译任务记录，参数：$normalizedRequest 标准化请求。
+     * 创建同步翻译任务记录，参数：$normalizedRequest 标准化请求，$startedAt 翻译开始时间，$finishedAt 翻译完成时间。
      * @since 2026-04-02
      * @author zhouxufeng
      * @param  array<string, mixed>  $normalizedRequest
      */
-    protected function createSyncJob(array $normalizedRequest): TranslationJob
-    {
+    protected function createSyncJob(
+        array $normalizedRequest,
+        ?\Illuminate\Support\Carbon $startedAt = null,
+        ?\Illuminate\Support\Carbon $finishedAt = null,
+    ): TranslationJob {
         $now = now();
 
         return TranslationJob::query()->create([
@@ -248,8 +255,8 @@ class TranslationService
             'source_title' => $normalizedRequest['source_title'] ?? null,
             'source_summary' => $normalizedRequest['source_summary'] ?? null,
             'source_body' => $normalizedRequest['source_body'] ?? null,
-            'started_at' => $now,
-            'finished_at' => $now,
+            'started_at' => $startedAt ?? $now,
+            'finished_at' => $finishedAt ?? $now,
         ]);
     }
 

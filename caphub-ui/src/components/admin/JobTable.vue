@@ -3,6 +3,7 @@ import { useAdminI18n } from '../../composables/useAdminI18n';
 import {
   buildSourcePreview,
   formatDateTime,
+  formatDuration,
   getStatusLabel,
   getStatusTagType,
   startCase,
@@ -22,12 +23,12 @@ const { locale, t } = useAdminI18n();
 <template>
   <div class="admin-table">
     <el-table :data="rows" stripe>
-      <el-table-column prop="id" :label="t('jobs.table.id')" width="90" />
-      <el-table-column :label="t('jobs.table.job')" min-width="280">
+      <el-table-column prop="id" :label="t('jobs.table.id')" width="70" />
+      <el-table-column :label="t('jobs.table.job')" min-width="240">
         <template #default="{ row }">
-          <div class="space-y-2 py-1">
-            <p class="text-sm font-semibold text-slate-950">{{ row.job_uuid }}</p>
-            <div class="flex flex-wrap gap-2">
+          <div class="space-y-1.5 py-1">
+            <p class="text-xs font-mono text-slate-500 truncate" :title="row.job_uuid">{{ row.job_uuid }}</p>
+            <div class="flex flex-wrap gap-1.5">
               <el-tag size="small" effect="plain" round>{{ startCase(row.mode) }}</el-tag>
               <el-tag size="small" effect="plain" round type="info">
                 {{ startCase(row.input_type) }}
@@ -36,36 +37,48 @@ const { locale, t } = useAdminI18n();
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('jobs.table.status')" width="130">
+      <el-table-column :label="t('jobs.table.status')" width="110" align="center">
         <template #default="{ row }">
-          <el-tag :type="getStatusTagType(row.status)">
+          <el-tag size="small" :type="getStatusTagType(row.status)" effect="light" round>
             {{ getStatusLabel(row.status, t) }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('jobs.table.translationBody')" min-width="360">
+      <el-table-column :label="t('jobs.table.translationBody')" min-width="320">
         <template #default="{ row }">
           <p
-            class="text-sm leading-6 text-slate-600"
+            class="text-sm leading-relaxed text-slate-600"
             style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;"
           >
             {{ buildSourcePreview(row) }}
           </p>
         </template>
       </el-table-column>
-      <el-table-column :label="t('jobs.table.startedAt')" min-width="190">
+      <el-table-column :label="t('jobs.table.duration')" width="100" align="center">
         <template #default="{ row }">
-          {{ formatDateTime(row.started_at, locale) }}
+          <span
+            class="inline-block rounded-full px-2.5 py-0.5 text-xs font-medium"
+            :class="formatDuration(row.started_at, row.finished_at) === '--'
+              ? 'bg-slate-100 text-slate-400'
+              : 'bg-sky-50 text-sky-700'"
+          >
+            {{ formatDuration(row.started_at, row.finished_at) }}
+          </span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('jobs.table.finishedAt')" min-width="190">
+      <el-table-column :label="t('jobs.table.startedAt')" min-width="170">
         <template #default="{ row }">
-          {{ formatDateTime(row.finished_at, locale) }}
+          <span class="text-xs text-slate-500">{{ formatDateTime(row.started_at, locale) }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('common.actions')" width="120" fixed="right">
+      <el-table-column :label="t('jobs.table.finishedAt')" min-width="170">
         <template #default="{ row }">
-          <el-button size="small" @click="emit('view', row)">{{ t('common.detail') }}</el-button>
+          <span class="text-xs text-slate-500">{{ formatDateTime(row.finished_at, locale) }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column :label="t('common.actions')" width="100" fixed="right" align="center">
+        <template #default="{ row }">
+          <el-button size="small" type="primary" text @click="emit('view', row)">{{ t('common.detail') }}</el-button>
         </template>
       </el-table-column>
     </el-table>

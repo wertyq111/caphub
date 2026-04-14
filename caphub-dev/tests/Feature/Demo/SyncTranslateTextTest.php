@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
@@ -86,6 +87,56 @@ it('returns a stable json error when the upstream translation call fails', funct
         ->assertExactJson([
             'message' => 'Translation failed.',
         ]);
+});
+
+it('records sync job timing around the upstream translation call', function () {
+    config()->set('services.openclaw', [
+        'base_url' => 'https://openclaw.example.test',
+        'api_key' => 'test-api-key',
+        'translation_agent' => 'chemical-news-translator',
+        'timeout' => 30,
+    ]);
+
+    $startedAt = Carbon::parse('2026-04-14 10:00:00');
+    $finishedAt = $startedAt->copy()->addSeconds(12);
+
+    Carbon::setTestNow($startedAt);
+
+    Http::fake([
+        '*' => function () use ($finishedAt) {
+            Carbon::setTestNow($finishedAt);
+
+            return Http::response([
+                'translated_document' => [
+                    'text' => 'Recorded with real timing.',
+                ],
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                ],
+            ], 200);
+        },
+    ]);
+
+    try {
+        $this->postJson('/api/demo/translate/sync', [
+            'input_type' => 'plain_text',
+            'source_lang' => 'zh-CN',
+            'target_lang' => 'en',
+            'content' => [
+                'text' => '中文翻译',
+            ],
+        ])->assertOk();
+    } finally {
+        Carbon::setTestNow();
+    }
+
+    $job = \App\Models\TranslationJob::query()->firstOrFail();
+
+    expect($job->started_at?->equalTo($startedAt))->toBeTrue();
+    expect($job->finished_at?->equalTo($finishedAt))->toBeTrue();
 });
 
 it('rejects translated content that still contains chinese when target language is english', function () {
