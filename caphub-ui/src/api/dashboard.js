@@ -14,6 +14,6 @@ export async function fetchDashboardStats() {
  * @since 2026-04-13
  */
 export async function sendChatMessage(message, history = []) {
-  const { data } = await http.post('/demo/chat', { message, history });
+  const { data } = await http.post('/demo/chat', { message, history }, { timeout: 120_000 });
   return data;
 }

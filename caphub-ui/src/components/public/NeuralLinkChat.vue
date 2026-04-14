@@ -74,7 +74,7 @@ async function handleSend() {
     const apiHistory = chatHistory.value
       .filter(m => m.role !== 'system')
       .slice(-18)
-      .map(m => ({ role: m.role, content: m.content }));
+      .map(m => ({ role: m.role, content: m.content.slice(0, 4000) }));
 
     const { reply } = await sendChatMessage(message, apiHistory.slice(0, -1));
     chatHistory.value.push({ role: 'assistant', content: reply });

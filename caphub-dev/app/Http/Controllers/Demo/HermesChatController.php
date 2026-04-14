@@ -16,7 +16,7 @@ class HermesChatController extends Controller
             'message' => ['required', 'string', 'max:2000'],
             'history' => ['sometimes', 'array', 'max:20'],
             'history.*.role' => ['required_with:history', 'string', 'in:user,assistant'],
-            'history.*.content' => ['required_with:history', 'string', 'max:2000'],
+            'history.*.content' => ['required_with:history', 'string', 'max:5000'],
         ]);
 
         $baseUrl = trim((string) config('services.hermes.chat_base_url', config('services.hermes.base_url', '')));
