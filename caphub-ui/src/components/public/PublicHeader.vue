@@ -1,17 +1,14 @@
 <script setup>
-import { computed } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
 import { useAuthStore } from '../../stores/auth';
-
-const route = useRoute();
-const auth = useAuthStore();
 
 const navigationItems = [
   { label: '首页', to: '/', icon: '◈' },
   { label: '翻译演示', to: '/demo/translate', icon: '⬡' },
 ];
 
-const isTranslatePage = computed(() => route.path.startsWith('/demo/translate'));
+const route = useRoute();
+const auth = useAuthStore();
 </script>
 
 <template>
@@ -64,10 +61,10 @@ const isTranslatePage = computed(() => route.path.startsWith('/demo/translate'))
 
         <!-- CTA -->
         <RouterLink
-          to="/demo/translate"
+          to="/admin"
           class="np-btn-cta !px-4 !py-2 !text-sm no-underline"
         >
-          {{ isTranslatePage ? '返回工作台' : '翻译工作台' }}
+          后端中心
         </RouterLink>
       </div>
     </div>
