@@ -46,6 +46,7 @@ function viewDetail(row) {
       :title="t('jobs.listTitle')"
       :subtitle="t('jobs.listSubtitle')"
       :padded="false"
+      :header-divider="false"
     >
       <template #header-actions>
         <el-tag round effect="plain">{{ t('common.totalRecords', { count: totalCount }) }}</el-tag>

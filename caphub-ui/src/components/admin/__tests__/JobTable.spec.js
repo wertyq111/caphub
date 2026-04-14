@@ -69,5 +69,6 @@ describe('JobTable', () => {
     expect(wrapper.text()).toContain('Started at');
     expect(wrapper.text()).toContain('Finished at');
     expect(wrapper.text()).toContain('2.5s');
+    expect(wrapper.text()).not.toContain('ID');
   });
 });

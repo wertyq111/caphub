@@ -23,7 +23,6 @@ const { locale, t } = useAdminI18n();
 <template>
   <div class="admin-table">
     <el-table :data="rows" stripe>
-      <el-table-column prop="id" :label="t('jobs.table.id')" width="70" />
       <el-table-column :label="t('jobs.table.job')" min-width="240">
         <template #default="{ row }">
           <div class="space-y-1.5 py-1">

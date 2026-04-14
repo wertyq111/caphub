@@ -14,6 +14,7 @@ import {
   getStatusLabel,
   getStatusTagType,
   resolveRequestError,
+  startCase,
 } from '../../utils/adminPresentation';
 
 const router = useRouter();
@@ -46,8 +47,13 @@ const overviewItems = computed(() => [
 const configurationItems = computed(() => [
   { label: t('jobs.detail.sourceLanguage'), value: job.value?.source_lang ?? '--' },
   { label: t('jobs.detail.targetLanguage'), value: job.value?.target_lang ?? '--' },
-  { label: t('jobs.detail.mode'), value: job.value?.mode ?? '--' },
-  { label: t('jobs.detail.inputType'), value: job.value?.input_type ?? '--' },
+  { label: t('jobs.detail.mode'), value: startCase(job.value?.mode) },
+  { label: t('jobs.detail.inputType'), value: startCase(job.value?.input_type) },
+  {
+    label: t('jobs.detail.translationProvider'),
+    value: providerLabel(job.value?.translation_provider),
+  },
+  { label: t('jobs.detail.translationAgent'), value: job.value?.translation_agent ?? '--' },
 ]);
 
 const timingItems = computed(() => [
@@ -71,6 +77,15 @@ const timingItems = computed(() => [
 
 const sourceDocument = computed(() => buildSourceDocument(job.value));
 const translatedDocument = computed(() => buildTranslatedDocument(job.value));
+
+function providerLabel(provider) {
+  if (!provider) {
+    return '--';
+  }
+
+  const translated = t(`translationProvider.options.${provider}`);
+  return translated === `translationProvider.options.${provider}` ? startCase(provider) : translated;
+}
 </script>
 
 <template>

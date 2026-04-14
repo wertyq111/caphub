@@ -12,6 +12,10 @@ defineProps({
     type: Boolean,
     default: true,
   },
+  headerDivider: {
+    type: Boolean,
+    default: true,
+  },
 });
 </script>
 
@@ -19,7 +23,10 @@ defineProps({
   <section class="overflow-hidden rounded-[28px] border border-slate-200/80 bg-white shadow-sm shadow-slate-900/5">
     <header
       v-if="title || subtitle || $slots.header || $slots['header-actions']"
-      class="flex flex-col gap-4 border-b border-slate-200/80 px-6 py-5 lg:flex-row lg:items-start lg:justify-between"
+      :class="[
+        'flex flex-col gap-4 px-6 py-5 lg:flex-row lg:items-start lg:justify-between',
+        headerDivider ? 'border-b border-slate-200/80' : '',
+      ]"
     >
       <div>
         <slot name="header">
