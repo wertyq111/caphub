@@ -38,7 +38,7 @@ return [
     'openclaw' => [
         'base_url' => env('OPENCLAW_BASE_URL'),
         'api_key' => env('OPENCLAW_API_KEY'),
-        'translation_agent' => env('OPENCLAW_TRANSLATION_AGENT', 'chemical-news-translator'),
+        'translation_agent' => env('OPENCLAW_TRANSLATION_AGENT', 'github-copilot/gpt-5-mini'),
         'timeout' => (int) env('OPENCLAW_TIMEOUT', 45),
         'retry_times' => (int) env('OPENCLAW_RETRY_TIMES', 1),
         'html_parallelism' => (int) env('OPENCLAW_HTML_PARALLELISM', 2),

@@ -371,7 +371,7 @@ class OpenClawClient
      */
     protected function translationAgent(): string
     {
-        $translationAgent = trim((string) config('services.openclaw.translation_agent', 'chemical-news-translator'));
+        $translationAgent = trim((string) config('services.openclaw.translation_agent', 'github-copilot/gpt-5-mini'));
 
         if ($translationAgent === '') {
             throw new RuntimeException('OpenClaw translation agent is not configured.');
