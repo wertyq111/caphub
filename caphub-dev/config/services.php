@@ -39,7 +39,9 @@ return [
         'base_url' => env('OPENCLAW_BASE_URL'),
         'api_key' => env('OPENCLAW_API_KEY'),
         'translation_agent' => env('OPENCLAW_TRANSLATION_AGENT', 'chemical-news-translator'),
-        'timeout' => (int) env('OPENCLAW_TIMEOUT', 30),
+        'timeout' => (int) env('OPENCLAW_TIMEOUT', 45),
+        'retry_times' => (int) env('OPENCLAW_RETRY_TIMES', 1),
+        'html_parallelism' => (int) env('OPENCLAW_HTML_PARALLELISM', 2),
     ],
 
     'hermes' => [
@@ -48,14 +50,10 @@ return [
         'profile' => env('HERMES_PROFILE', 'chemical-news-translator'),
         'model' => env('HERMES_MODEL', 'gpt-5-mini'),
         'timeout' => (int) env('HERMES_TIMEOUT', 120),
+        'html_parallelism' => (int) env('HERMES_HTML_PARALLELISM', 2),
         'chat_base_url' => env('HERMES_CHAT_BASE_URL', env('HERMES_BASE_URL')),
         'chat_api_key' => env('HERMES_CHAT_API_KEY', env('HERMES_API_KEY')),
         'chat_profile' => env('HERMES_CHAT_PROFILE', 'caphub-assistant'),
-    ],
-
-    'translation' => [
-        'sync_short_text_provider' => env('SYNC_SHORT_TEXT_PROVIDER', 'hermes'),
-        'sync_short_text_max_length' => (int) env('SYNC_SHORT_TEXT_MAX_LENGTH', 3),
     ],
 
 ];

@@ -5,7 +5,6 @@ namespace App\Services\Translation;
 use App\Clients\Ai\Hermes\HermesTranslationGateway;
 use App\Clients\Ai\OpenClaw\OpenClawTranslationGateway;
 use App\Enums\TranslationProvider;
-use RuntimeException;
 
 class TranslationGatewayRouter
 {
@@ -31,23 +30,7 @@ class TranslationGatewayRouter
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
-        return $this->translatePayloadForProvider(
-            $this->activeProvider(),
-            $payload,
-            $jobId,
-            $enforceTargetLanguage,
-            $allowPartialTranslatedDocument,
-        );
-    }
-
-    public function translatePayloadForProvider(
-        TranslationProvider $provider,
-        array $payload,
-        ?int $jobId = null,
-        bool $enforceTargetLanguage = true,
-        bool $allowPartialTranslatedDocument = false,
-    ): array {
-        return $this->gatewayForProvider($provider)->translatePayload(
+        return $this->activeGateway()->translatePayload(
             $payload,
             $jobId,
             $enforceTargetLanguage,
@@ -86,81 +69,24 @@ class TranslationGatewayRouter
 
     public function activeAgent(): string
     {
-        return $this->agentForProvider($this->activeProvider());
+        return $this->activeGateway()->translationAgent();
     }
 
-    public function agentForProvider(TranslationProvider $provider): string
+    public function timeout(): int
     {
-        return $this->gatewayForProvider($provider)->translationAgent();
+        return $this->activeGateway()->timeout();
     }
 
-    public function timeout(?TranslationProvider $provider = null): int
+    public function htmlParallelism(): int
     {
-        return $this->gatewayForProvider($provider ?? $this->activeProvider())->timeout();
-    }
-
-    /**
-     * @param  array<string, mixed>  $normalizedRequest
-     */
-    public function syncProvider(array $normalizedRequest): TranslationProvider
-    {
-        if (! $this->shouldUseSyncShortTextProvider($normalizedRequest)) {
-            return $this->activeProvider();
-        }
-
-        $providerValue = trim((string) config('services.translation.sync_short_text_provider', ''));
-
-        if ($providerValue === '') {
-            return $this->activeProvider();
-        }
-
-        $provider = TranslationProvider::tryFrom($providerValue);
-
-        if (! $provider) {
-            throw new RuntimeException(sprintf(
-                'Sync short text provider [%s] is invalid.',
-                $providerValue,
-            ));
-        }
-
-        if (! $this->settings->isConfigured($provider)) {
-            throw new RuntimeException(sprintf(
-                'Sync short text provider [%s] is not configured.',
-                $provider->value,
-            ));
-        }
-
-        return $provider;
+        return $this->activeGateway()->htmlParallelism();
     }
 
     protected function activeGateway(): OpenClawTranslationGateway|HermesTranslationGateway
     {
-        return $this->gatewayForProvider($this->settings->current());
-    }
-
-    protected function gatewayForProvider(TranslationProvider $provider): OpenClawTranslationGateway|HermesTranslationGateway
-    {
-        return match ($provider) {
+        return match ($this->settings->current()) {
             TranslationProvider::OpenClaw => $this->openClawGateway,
             TranslationProvider::Hermes => $this->hermesGateway,
         };
-    }
-
-    /**
-     * @param  array<string, mixed>  $normalizedRequest
-     */
-    protected function shouldUseSyncShortTextProvider(array $normalizedRequest): bool
-    {
-        if (($normalizedRequest['input_type'] ?? null) !== 'plain_text') {
-            return false;
-        }
-
-        $text = $normalizedRequest['source_text'] ?? null;
-
-        if (! is_string($text) || trim($text) === '') {
-            return false;
-        }
-
-        return mb_strlen($text) <= max(1, (int) config('services.translation.sync_short_text_max_length', 3));
     }
 }
