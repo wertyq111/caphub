@@ -64,7 +64,7 @@ const auth = useAuthStore();
           to="/admin"
           class="np-btn-cta !px-4 !py-2 !text-sm no-underline"
         >
-          后端中心
+          后台管理
         </RouterLink>
       </div>
     </div>
