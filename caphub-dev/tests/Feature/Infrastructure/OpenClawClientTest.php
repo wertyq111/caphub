@@ -108,8 +108,11 @@ it('posts a translation payload to OpenClaw and returns the response structure',
         'meta' => [
             'schema_version' => 'v1',
             'provider_model' => 'openclaw',
+            'retry_count' => 0,
+            'upstream_http_status' => 200,
         ],
     ]);
+    expect(data_get($response, 'meta.upstream_http_status'))->toBe(200);
 });
 
 it('includes plain text field when building translation payload for text input', function () {
@@ -254,6 +257,8 @@ it('allows lenient translation payloads to omit some translated document keys', 
         'meta' => [
             'schema_version' => 'v1',
             'provider_model' => 'openclaw',
+            'retry_count' => 0,
+            'upstream_http_status' => 200,
         ],
     ]);
 });

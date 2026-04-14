@@ -6,6 +6,7 @@ use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
 
@@ -72,14 +73,19 @@ class OpenClawClient
             try {
                 $response = $this->request()
                     ->post($this->translationPath(), $requestPayload)
-                    ->throw()
-                    ->json() ?? [];
+                    ->throw();
 
-                return $this->validateTranslationResponse(
-                    $this->normalizeResponsePayload($response),
-                    $payload,
-                    $enforceTargetLanguage,
-                    $allowPartialTranslatedDocument,
+                return $this->withRetryCount(
+                    $this->attachTransportMeta(
+                        $this->validateTranslationResponse(
+                            $this->normalizeResponsePayload($response->json() ?? []),
+                            $payload,
+                            $enforceTargetLanguage,
+                            $allowPartialTranslatedDocument,
+                        ),
+                        $response,
+                    ),
+                    $attempt,
                 );
             } catch (RuntimeException $exception) {
                 $lastException = $exception;
@@ -88,6 +94,8 @@ class OpenClawClient
                 if (! $this->shouldRetryAfter($exception) || $attempt >= $maxAttempts) {
                     throw $exception;
                 }
+
+                $this->logRetryAttempt($payload, $exception, $attempt, $maxAttempts);
             }
         }
 
@@ -156,14 +164,20 @@ class OpenClawClient
                     throw new RuntimeException('OpenClaw concurrent translation request did not return a response.');
                 }
 
-                $responsePayload = $response->throw()->json() ?? [];
+                $response->throw();
 
                 $results[$key] = [
-                    'response' => $this->validateTranslationResponse(
-                        $this->normalizeResponsePayload($responsePayload),
-                        $descriptor['payload'],
-                        $descriptor['enforce_target_language'],
-                        $descriptor['allow_partial_translated_document'],
+                    'response' => $this->withRetryCount(
+                        $this->attachTransportMeta(
+                            $this->validateTranslationResponse(
+                                $this->normalizeResponsePayload($response->json() ?? []),
+                                $descriptor['payload'],
+                                $descriptor['enforce_target_language'],
+                                $descriptor['allow_partial_translated_document'],
+                            ),
+                            $response,
+                        ),
+                        0,
                     ),
                 ];
             } catch (Throwable $throwable) {
@@ -195,6 +209,87 @@ class OpenClawClient
                 self::OPERATOR_SCOPES_HEADER => self::TRANSLATION_OPERATOR_SCOPES,
             ])
             ->withToken($apiKey);
+    }
+
+    protected function withRetryCount(array $response, int $retryCount): array
+    {
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
+            'retry_count' => max(0, $retryCount),
+        ]);
+
+        return $response;
+    }
+
+    /**
+     * 将 HTTP 传输层观测指标补入响应 meta。
+     * @since 2026-04-14
+     * @author zhouxufeng
+     * @param  array<string, mixed>  $response
+     * @return array<string, mixed>
+     */
+    protected function attachTransportMeta(array $response, Response $httpResponse): array
+    {
+        $stats = $httpResponse->handlerStats();
+
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), array_filter([
+            'upstream_http_status' => $httpResponse->status(),
+            'upstream_connect_time_ms' => $this->handlerStatMillis($stats, 'connect_time'),
+            'upstream_starttransfer_time_ms' => $this->handlerStatMillis($stats, 'starttransfer_time'),
+            'upstream_total_time_ms' => $this->handlerStatMillis($stats, 'total_time'),
+        ], static fn (mixed $value): bool => $value !== null));
+
+        return $response;
+    }
+
+    /**
+     * 记录 OpenClaw 重试尝试，便于定位同步翻译是慢在上游重试还是首包阻塞。
+     * @since 2026-04-14
+     * @author zhouxufeng
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $context
+     */
+    protected function logRetryAttempt(
+        array $payload,
+        Throwable $throwable,
+        int $attempt,
+        int $maxAttempts,
+        array $context = [],
+    ): void {
+        Log::warning('openclaw_translation_retry', array_merge([
+            'attempt' => $attempt,
+            'max_attempts' => $maxAttempts,
+            'error' => $throwable->getMessage(),
+            'document_keys' => array_keys((array) ($payload['input_document'] ?? [])),
+            'document_lengths' => $this->summarizeDocumentLengths((array) ($payload['input_document'] ?? [])),
+            'source_lang' => data_get($payload, 'context.source_lang'),
+            'target_lang' => data_get($payload, 'context.target_lang'),
+        ], $context));
+    }
+
+    /**
+     * @param  array<string, mixed>  $handlerStats
+     */
+    protected function handlerStatMillis(array $handlerStats, string $key): ?int
+    {
+        $value = $handlerStats[$key] ?? null;
+
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return max(0, (int) round(((float) $value) * 1000));
+    }
+
+    /**
+     * @param  array<string, mixed>  $document
+     * @return array<string, int>
+     */
+    protected function summarizeDocumentLengths(array $document): array
+    {
+        return collect($document)
+            ->filter(static fn (mixed $value): bool => is_string($value))
+            ->map(static fn (string $value): int => mb_strlen($value))
+            ->all();
     }
 
     /**

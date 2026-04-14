@@ -8,6 +8,7 @@ use App\Models\TranslationJob;
 use App\Services\TaskCenter\TranslationJobService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
@@ -64,16 +65,19 @@ class TranslationService
         $cacheKey = $this->syncCacheKey($normalizedRequest);
         $lockSeconds = $this->syncCacheLockSeconds();
         $waitSeconds = $this->syncCacheLockWaitSeconds();
+        $cacheContext = $this->syncCacheContext($normalizedRequest, $cacheKey);
 
-        return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest) {
+        return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest, $cacheContext) {
             $cachedResponse = Cache::get($cacheKey);
 
             if (is_array($cachedResponse)) {
+                Log::info('sync_translation_cache_hit', $cacheContext);
                 $this->recordDemoAccess('sync_translation_cache_hit');
 
                 return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($cachedResponse, true));
             }
 
+            Log::info('sync_translation_cache_miss', $cacheContext);
             $startedAt = now();
             $job = $this->createSyncJob($normalizedRequest, $startedAt);
 
@@ -97,7 +101,11 @@ class TranslationService
                     return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($response, false));
                 });
 
-                Cache::put($cacheKey, $response, now()->addHour());
+                $stored = Cache::put($cacheKey, $response, now()->addHour());
+                Log::info('sync_translation_cache_store', array_merge($cacheContext, [
+                    'stored' => $stored,
+                    'job_id' => $job->id,
+                ]));
 
                 return $result;
             } catch (Throwable $throwable) {
@@ -220,6 +228,40 @@ class TranslationService
             'translation_provider' => $this->gateway->activeProvider()->value,
             'translation_agent' => $this->gateway->activeAgent(),
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * 组装同步缓存观测上下文，避免后续再靠猜缓存为什么 miss。
+     * @since 2026-04-14
+     * @author zhouxufeng
+     * @param  array<string, mixed>  $normalizedRequest
+     * @return array<string, mixed>
+     */
+    protected function syncCacheContext(array $normalizedRequest, string $cacheKey): array
+    {
+        return [
+            'cache_key_hash' => hash('sha256', $cacheKey),
+            'provider' => $this->gateway->activeProvider()->value,
+            'agent' => $this->gateway->activeAgent(),
+            'input_type' => $normalizedRequest['input_type'] ?? 'plain_text',
+            'document_type' => $normalizedRequest['document_type'] ?? null,
+            'source_lang' => $normalizedRequest['source_lang'] ?? null,
+            'target_lang' => $normalizedRequest['target_lang'] ?? null,
+            'document_keys' => array_keys((array) ($normalizedRequest['input_document'] ?? [])),
+            'document_lengths' => $this->syncDocumentLengths((array) ($normalizedRequest['input_document'] ?? [])),
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $document
+     * @return array<string, int>
+     */
+    protected function syncDocumentLengths(array $document): array
+    {
+        return collect($document)
+            ->filter(static fn (mixed $value): bool => is_string($value))
+            ->map(static fn (string $value): int => mb_strlen($value))
+            ->all();
     }
 
     /**
