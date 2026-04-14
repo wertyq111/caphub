@@ -2,3 +2,5 @@
 ._*
 .DS_Store
 caphub-ui/dist/
+.ccb
+project-config.json
