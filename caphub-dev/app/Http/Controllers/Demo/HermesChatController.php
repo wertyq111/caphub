@@ -31,12 +31,19 @@ class HermesChatController extends Controller
             ]);
         }
 
+        $modelInfo = $this->fetchAvailableModels($apiKey, $timeout);
+
         $systemPrompt = implode("\n", [
             'You are CapHub Neural Link, an AI assistant for the CapHub chemical translation platform.',
             'You help users understand translation capabilities, agent status, and system operations.',
             'Respond concisely in the same language as the user message.',
-            'If asked about translation, guide users to use the translation workbench.',
+            'If asked about translation, guide users to use the translation workbench at /demo/translate.',
             'You can discuss chemical industry terminology, translation quality, and system status.',
+            '',
+            '## Available Models/Agents on this platform:',
+            $modelInfo,
+            '',
+            'When users ask about available models, respond with the actual model list above.',
         ]);
 
         $messages = [
@@ -81,5 +88,45 @@ class HermesChatController extends Controller
                 'error' => true,
             ]);
         }
+    }
+
+    /**
+     * Query all configured Hermes instances for their available models.
+     */
+    private function fetchAvailableModels(string $apiKey, int $timeout): string
+    {
+        $endpoints = [
+            ['url' => config('services.hermes.chat_base_url', ''), 'role' => 'AI 对话助手 (Neural Link)'],
+            ['url' => config('services.hermes.base_url', ''), 'role' => '化工翻译引擎'],
+        ];
+
+        $models = [];
+
+        foreach ($endpoints as $ep) {
+            $url = trim((string) $ep['url']);
+            if ($url === '') continue;
+
+            try {
+                $resp = Http::baseUrl(rtrim($url, '/'))
+                    ->acceptJson()
+                    ->timeout(min($timeout, 10))
+                    ->withToken($apiKey)
+                    ->get('/v1/models');
+
+                if ($resp->successful()) {
+                    $data = $resp->json('data', []);
+                    foreach ($data as $model) {
+                        $id = $model['id'] ?? 'unknown';
+                        $models[] = "- {$id} ({$ep['role']})";
+                    }
+                }
+            } catch (\Throwable) {
+                // Skip unreachable instances
+            }
+        }
+
+        return $models
+            ? implode("\n", $models)
+            : '- 暂无法获取模型列表（Hermes 服务可能未就绪）';
     }
 }
