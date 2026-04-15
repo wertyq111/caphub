@@ -47,7 +47,7 @@ const { t } = useAdminI18n();
           </div>
         </template>
       </el-table-column>
-      <el-table-column :label="t('glossary.table.status')" width="110" align="center">
+      <el-table-column :label="t('glossary.table.status')" width="128" align="center" class-name="status-chip-cell">
         <template #default="{ row }">
           <el-tag size="small" effect="light" round :type="row.status === 'active' ? 'success' : 'info'">
             {{ row.status === 'active' ? t('statuses.active') : t('statuses.inactive') }}

@@ -29,7 +29,7 @@ export function truncateText(value, maxLength = 140) {
 }
 
 export function getStatusTagType(status) {
-  switch (status) {
+  switch (normalizeStatus(status)) {
     case 'succeeded':
     case 'active':
       return 'success';
@@ -50,12 +50,14 @@ export function getStatusLabel(status, translate) {
     return '--';
   }
 
+  const normalizedStatus = normalizeStatus(status);
+
   if (typeof translate !== 'function') {
-    return startCase(status);
+    return startCase(normalizedStatus);
   }
 
-  const translated = translate(`statuses.${status}`);
-  return translated === `statuses.${status}` ? startCase(status) : translated;
+  const translated = translate(`statuses.${normalizedStatus}`);
+  return translated === `statuses.${normalizedStatus}` ? startCase(normalizedStatus) : translated;
 }
 
 export function startCase(value) {
@@ -165,6 +167,14 @@ export function normalizeRichText(value) {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')
     .trim() || '--';
+}
+
+function normalizeStatus(status) {
+  if (status === 'success') {
+    return 'succeeded';
+  }
+
+  return status;
 }
 
 function firstNonEmptyDocument(values) {

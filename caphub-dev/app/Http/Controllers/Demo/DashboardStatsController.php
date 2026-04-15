@@ -21,11 +21,11 @@ class DashboardStatsController extends Controller
             $configured = $providerSettings->isConfigured($provider);
 
             $recentStats = AiInvocation::query()
-                ->where('agent_name', 'like', "%{$providerKey}%")
+                ->where('request_payload->execution_context->provider', $providerKey)
                 ->where('created_at', '>=', now()->subDay())
                 ->selectRaw('COUNT(*) as total_calls')
                 ->selectRaw('AVG(duration_ms) as avg_latency_ms')
-                ->selectRaw("SUM(CASE WHEN status = 'succeeded' THEN 1 ELSE 0 END) as succeeded")
+                ->selectRaw("SUM(CASE WHEN status IN ('success', 'succeeded') THEN 1 ELSE 0 END) as succeeded")
                 ->selectRaw("SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed")
                 ->first();
 
@@ -43,9 +43,11 @@ class DashboardStatsController extends Controller
             ];
         }, TranslationProvider::cases());
 
+        $hourBucketExpression = $this->hourBucketExpression();
+
         $throughput = AiInvocation::query()
             ->where('created_at', '>=', now()->subHours(12))
-            ->selectRaw("DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00') as hour_bucket")
+            ->selectRaw("{$hourBucketExpression} as hour_bucket")
             ->selectRaw('COUNT(*) as request_count')
             ->selectRaw('AVG(duration_ms) as avg_duration_ms')
             ->groupBy('hour_bucket')
@@ -64,7 +66,7 @@ class DashboardStatsController extends Controller
             ->map(fn ($log) => [
                 'id' => $log->id,
                 'agent' => $log->agent_name,
-                'status' => $log->status,
+                'status' => $this->normalizeStatus($log->status),
                 'duration_ms' => $log->duration_ms,
                 'time' => $log->created_at?->toIso8601String(),
             ]);
@@ -86,5 +88,22 @@ class DashboardStatsController extends Controller
                 'processing' => (int) ($jobSummary->processing ?? 0),
             ],
         ]);
+    }
+
+    protected function normalizeStatus(?string $status): ?string
+    {
+        if ($status === 'success') {
+            return 'succeeded';
+        }
+
+        return $status;
+    }
+
+    protected function hourBucketExpression(): string
+    {
+        return match (DB::connection()->getDriverName()) {
+            'sqlite' => "strftime('%Y-%m-%d %H:00:00', created_at)",
+            default => "DATE_FORMAT(created_at, '%Y-%m-%d %H:00:00')",
+        };
     }
 }
