@@ -208,6 +208,15 @@ function signOut() {
   padding: 12px 12px;
 }
 
+:deep(.el-table td.timing-chip-cell .cell) {
+  display: flex;
+  justify-content: center;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  padding-inline: 0;
+}
+
 :deep(.el-table--striped .el-table__body tr.el-table__row--striped td.el-table__cell) {
   background: #fafbfc;
 }

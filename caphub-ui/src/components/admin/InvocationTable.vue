@@ -33,7 +33,7 @@ const { locale, t } = useAdminI18n();
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column :label="t('invocations.table.duration')" width="100" align="center">
+      <el-table-column :label="t('invocations.table.duration')" width="100" align="center" class-name="timing-chip-cell">
         <template #default="{ row }">
           <span
             class="inline-block rounded-full px-2.5 py-0.5 text-xs font-medium"
