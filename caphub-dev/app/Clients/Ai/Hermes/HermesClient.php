@@ -2,13 +2,20 @@
 
 namespace App\Clients\Ai\Hermes;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Throwable;
 
 class HermesClient
 {
     protected const OUTPUT_SCHEMA_VERSION = 'v1';
+
+    protected const RETRYABLE_STATUS_CODES = [429, 502, 503, 504];
 
     /**
      * 通过 Hermes API Server 执行翻译并返回结构化结果。
@@ -21,17 +28,83 @@ class HermesClient
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
-        $response = $this->request()
-            ->post('/chat/completions', $this->openAiRequestPayload($payload))
-            ->throw()
-            ->json() ?? [];
+        try {
+            $response = $this->request()
+                ->post('/chat/completions', $this->openAiRequestPayload($payload))
+                ->throw()
+                ->json() ?? [];
 
-        return $this->validateTranslationResponse(
-            $this->normalizeResponsePayload($response),
-            $payload,
-            $enforceTargetLanguage,
-            $allowPartialTranslatedDocument,
-        );
+            return $this->withRetryCount($this->validateTranslationResponse(
+                $this->normalizeResponsePayload($response),
+                $payload,
+                $enforceTargetLanguage,
+                $allowPartialTranslatedDocument,
+            ), 0);
+        } catch (Throwable $throwable) {
+            throw $this->normalizeException($throwable);
+        }
+    }
+
+    /**
+     * @param  array<array-key, array{
+     *     payload: array<string, mixed>,
+     *     enforce_target_language?: bool,
+     *     allow_partial_translated_document?: bool
+     * }>  $requests
+     * @return array<array-key, array{response?: array<string, mixed>, exception?: RuntimeException}>
+     */
+    public function sendTranslationPayloadsConcurrently(array $requests, int $concurrency = 2): array
+    {
+        if ($requests === []) {
+            return [];
+        }
+
+        $descriptors = [];
+
+        foreach ($requests as $key => $request) {
+            $payload = (array) ($request['payload'] ?? []);
+
+            $descriptors[$key] = [
+                'payload' => $payload,
+                'request_payload' => $this->openAiRequestPayload($payload),
+                'enforce_target_language' => (bool) ($request['enforce_target_language'] ?? true),
+                'allow_partial_translated_document' => (bool) ($request['allow_partial_translated_document'] ?? false),
+            ];
+        }
+
+        $responses = $this->dispatchConcurrentRequests($descriptors, $concurrency);
+        $results = [];
+
+        foreach ($descriptors as $key => $descriptor) {
+            $response = $responses[(string) $key] ?? $responses[$key] ?? null;
+
+            try {
+                if ($response instanceof Throwable) {
+                    throw $response;
+                }
+
+                if (! $response instanceof Response) {
+                    throw new RuntimeException('Hermes concurrent translation request did not return a response.');
+                }
+
+                $responsePayload = $response->throw()->json() ?? [];
+
+                $results[$key] = [
+                    'response' => $this->withRetryCount($this->validateTranslationResponse(
+                        $this->normalizeResponsePayload($responsePayload),
+                        $descriptor['payload'],
+                        $descriptor['enforce_target_language'],
+                        $descriptor['allow_partial_translated_document'],
+                    ), 0),
+                ];
+            } catch (Throwable $throwable) {
+                $results[$key] = [
+                    'exception' => $this->normalizeException($throwable),
+                ];
+            }
+        }
+
+        return $results;
     }
 
     protected function request(): PendingRequest
@@ -41,6 +114,49 @@ class HermesClient
             ->asJson()
             ->timeout($this->timeout())
             ->withToken($this->apiKey());
+    }
+
+    /**
+     * @param  array<array-key, array{request_payload: array<string, mixed>}>  $descriptors
+     * @return array<array-key, Response|Throwable>
+     */
+    protected function dispatchConcurrentRequests(array $descriptors, int $concurrency): array
+    {
+        $baseUrl = $this->baseUrl();
+        $apiKey = $this->apiKey();
+        $timeout = $this->timeout();
+
+        return Http::baseUrl($baseUrl)
+            ->pool(function (Pool $pool) use ($descriptors, $apiKey, $timeout): void {
+                foreach ($descriptors as $key => $descriptor) {
+                    $pool->as((string) $key)
+                        ->acceptJson()
+                        ->asJson()
+                        ->timeout($timeout)
+                        ->withToken($apiKey)
+                        ->post('/chat/completions', $descriptor['request_payload']);
+                }
+            }, max(1, $concurrency));
+    }
+
+    protected function withRetryCount(array $response, int $retryCount): array
+    {
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
+            'retry_count' => max(0, $retryCount),
+        ]);
+
+        return $response;
+    }
+
+    protected function normalizeException(Throwable $throwable): RuntimeException
+    {
+        $exception = $this->toRuntimeException($throwable);
+
+        if ($this->isTransientUpstreamFailure($throwable)) {
+            return new RuntimeException('upstream_timeout: '.$exception->getMessage(), (int) $exception->getCode(), $throwable);
+        }
+
+        return $exception;
     }
 
     protected function baseUrl(): string
@@ -310,5 +426,27 @@ class HermesClient
     protected function containsChineseCharacters(string $value): bool
     {
         return preg_match('/\p{Han}/u', $value) === 1;
+    }
+
+    protected function isTransientUpstreamFailure(Throwable $throwable): bool
+    {
+        if ($throwable instanceof ConnectionException) {
+            return str_contains(strtolower($throwable->getMessage()), 'curl error 28');
+        }
+
+        if ($throwable instanceof RequestException) {
+            return in_array($throwable->response?->status(), self::RETRYABLE_STATUS_CODES, true);
+        }
+
+        return false;
+    }
+
+    protected function toRuntimeException(Throwable $throwable): RuntimeException
+    {
+        if ($throwable instanceof RuntimeException) {
+            return $throwable;
+        }
+
+        return new RuntimeException($throwable->getMessage(), (int) $throwable->getCode(), $throwable);
     }
 }

@@ -4,3 +4,5 @@
 caphub-ui/dist/
 .ccb/
 project-config.json
+project-*.json
+lessons.md
