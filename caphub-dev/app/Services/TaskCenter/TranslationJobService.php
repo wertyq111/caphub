@@ -64,10 +64,47 @@ class TranslationJobService
     {
         $job->forceFill([
             'status' => TranslationJobStatus::Failed,
-            'failure_reason' => $failureReason,
+            'failure_reason' => $this->normalizeFailureReason($failureReason),
             'finished_at' => $finishedAt ?? now(),
         ])->save();
 
         return $job->refresh();
+    }
+
+    protected function normalizeFailureReason(?string $failureReason): ?string
+    {
+        $normalized = trim((string) $failureReason);
+
+        if ($normalized === '') {
+            return null;
+        }
+
+        foreach (['upstream_timeout:', 'full_fallback:', 'job_budget_exceeded:'] as $prefix) {
+            if (str_starts_with($normalized, $prefix)) {
+                return $normalized;
+            }
+        }
+
+        if ($this->isUpstreamTimeoutReason($normalized)) {
+            return 'upstream_timeout: '.$normalized;
+        }
+
+        if (str_contains($normalized, 'contains Chinese characters for English target output')) {
+            return 'full_fallback: '.$normalized;
+        }
+
+        return $normalized;
+    }
+
+    protected function isUpstreamTimeoutReason(string $failureReason): bool
+    {
+        $normalized = strtolower($failureReason);
+
+        return str_contains($normalized, 'curl error 28')
+            || str_contains($normalized, 'timed out')
+            || str_contains($normalized, 'status code 429')
+            || str_contains($normalized, 'status code 502')
+            || str_contains($normalized, 'status code 503')
+            || str_contains($normalized, 'status code 504');
     }
 }

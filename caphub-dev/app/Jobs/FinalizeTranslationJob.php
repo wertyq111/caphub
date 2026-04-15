@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Services\TaskCenter\TranslationJobService;
+use App\Services\Translation\AsyncTranslationResultHealthValidator;
 use App\Services\Translation\GlossaryHitPersister;
 use App\Models\TranslationJob;
 use App\Models\TranslationResult;
@@ -32,10 +33,13 @@ class FinalizeTranslationJob implements ShouldQueue
 
     public function handle(
         TranslationJobService $translationJobService,
+        AsyncTranslationResultHealthValidator $resultHealthValidator,
         GlossaryHitPersister $glossaryHitPersister,
     ): void {
         $job = TranslationJob::query()->findOrFail($this->jobId);
         $response = (array) ($this->result['response'] ?? []);
+        $validation = $resultHealthValidator->validate($job, $response);
+        $response = (array) ($validation['response'] ?? []);
 
         TranslationResult::query()->updateOrCreate(
             ['translation_job_id' => $job->id],
@@ -54,6 +58,12 @@ class FinalizeTranslationJob implements ShouldQueue
             $job,
             (array) ($response['glossary_hits'] ?? []),
         );
+
+        if (is_string($validation['failure_reason'] ?? null)) {
+            $translationJobService->markFailed($job, $validation['failure_reason']);
+
+            return;
+        }
 
         $translationJobService->markSucceeded($job);
     }

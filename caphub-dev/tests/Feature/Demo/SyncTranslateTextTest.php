@@ -90,6 +90,16 @@ it('returns a stable json error when the upstream translation call fails', funct
         ->assertExactJson([
             'message' => 'Translation failed.',
         ]);
+
+    $job = \App\Models\TranslationJob::query()->firstOrFail();
+
+    expect($job->status)->toBe(\App\Enums\TranslationJobStatus::Failed);
+
+    $this->assertDatabaseHas('ai_invocations', [
+        'job_id' => $job->id,
+        'agent_name' => 'chemical-news-translator',
+        'status' => 'failed',
+    ]);
 });
 
 it('records sync job timing around the upstream translation call', function () {

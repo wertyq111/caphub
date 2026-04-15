@@ -1,6 +1,7 @@
 <?php
 
 use App\Services\TaskCenter\TranslationJobService;
+use App\Services\Translation\AsyncTranslationResultHealthValidator;
 use App\Services\Translation\GlossaryHitPersister;
 use App\Services\Translation\HtmlTextNodeTranslator;
 use App\Services\Translation\TranslationService;
@@ -8,12 +9,18 @@ use App\Enums\TranslationJobStatus;
 use App\Jobs\FinalizeTranslationJob;
 use App\Jobs\ProcessTranslationJob;
 use App\Models\Glossary;
+use App\Models\SystemSetting;
 use App\Models\TranslationJob;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
+
+beforeEach(function () {
+    Cache::flush();
+});
 
 function fakeSemanticSegmentDocument(string $html, array $translationsBySegmentIndex): array
 {
@@ -141,6 +148,7 @@ it('dispatches an async translation job and allows polling for status and result
         ],
     ]))->handle(
         app(TranslationJobService::class),
+        app(AsyncTranslationResultHealthValidator::class),
         app(GlossaryHitPersister::class),
     );
 
@@ -232,7 +240,7 @@ it('chunks long async plain text translations and merges the translated text', f
     });
 });
 
-it('preserves html tags and falls back to original text when a text node keeps failing translation', function () {
+it('marks async html translations as failed when every text node falls back to the source content', function () {
     Bus::fake();
     config()->set('services.openclaw', [
         'base_url' => 'https://openclaw.example.test',
@@ -294,8 +302,11 @@ it('preserves html tags and falls back to original text when a text node keeps f
     );
 
     Http::assertSentCount(2);
+    $finalizeJob = null;
 
-    Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
+    Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $dispatchedJob) use (&$finalizeJob) {
+        $finalizeJob = $dispatchedJob;
+
         expect($finalizeJob->result['response']['translated_document']['text'])
             ->toBe('<p><span style="color:#0000cd;">第一段内容</span><strong>第二段内容</strong></p>');
         expect($finalizeJob->result['response']['meta']['html_mode'])->toBeTrue();
@@ -306,6 +317,266 @@ it('preserves html tags and falls back to original text when a text node keeps f
 
         return true;
     });
+
+    expect($finalizeJob)->toBeInstanceOf(FinalizeTranslationJob::class);
+
+    $finalizeJob->handle(
+        app(TranslationJobService::class),
+        app(AsyncTranslationResultHealthValidator::class),
+        app(GlossaryHitPersister::class),
+    );
+
+    $job->refresh()->load('result');
+
+    expect($job->status)->toBe(TranslationJobStatus::Failed);
+    expect($job->failure_reason)->toBe('full_fallback: translated output fell back to the source content for all available HTML text nodes.');
+    expect($job->result)->not->toBeNull();
+    expect($job->result->translated_document_json['text'])
+        ->toBe('<p><span style="color:#0000cd;">第一段内容</span><strong>第二段内容</strong></p>');
+    expect($job->result->meta_payload['full_fallback'])->toBeTrue();
+    expect($job->result->meta_payload['fallback_ratio'])->toEqual(1.0);
+
+    $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}")
+        ->assertOk()
+        ->assertJsonPath('status', 'failed')
+        ->assertJsonPath('error.reason', 'full_fallback: translated output fell back to the source content for all available HTML text nodes.');
+
+    $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}/result")
+        ->assertStatus(409)
+        ->assertJsonPath('error.code', 'translation_failed')
+        ->assertJsonPath('error.reason', 'full_fallback: translated output fell back to the source content for all available HTML text nodes.');
+});
+
+it('keeps async html jobs successful when only part of the content falls back to the source', function () {
+    Bus::fake();
+    config()->set('services.openclaw', [
+        'base_url' => 'https://openclaw.example.test',
+        'api_key' => 'test-api-key',
+        'translation_agent' => 'chemical-news-translator',
+        'timeout' => 120,
+        'retry_times' => 0,
+    ]);
+
+    $html = '<p>第一段内容</p><p>第二段内容</p>';
+    $partiallyInvalidDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+        ],
+        1 => [
+            0 => '第二段 content',
+        ],
+    ]);
+
+    Http::fake([
+        '*' => Http::sequence()
+            ->push([
+                'translated_document' => $partiallyInvalidDocument,
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openclaw/chemical-news-translator',
+                ],
+            ], 200)
+            ->push([
+                'translated_document' => [
+                    'segment_1' => fakeSemanticSegmentDocument('<p>第二段内容</p>', [
+                        0 => [
+                            0 => '第二段 content',
+                        ],
+                    ])['segment_0'],
+                ],
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openclaw/chemical-news-translator',
+                ],
+            ], 200),
+    ]);
+
+    $response = $this->postJson('/api/demo/translate/async', [
+        'input_type' => 'plain_text',
+        'document_type' => 'chemical_news',
+        'source_lang' => 'zh-CN',
+        'target_lang' => 'en',
+        'content' => [
+            'text' => $html,
+        ],
+    ]);
+
+    $job = TranslationJob::query()
+        ->where('job_uuid', $response->json('job_uuid'))
+        ->firstOrFail();
+
+    (new ProcessTranslationJob($job->id))->handle(
+        app(TranslationJobService::class),
+        app(TranslationService::class),
+    );
+
+    $finalizeJob = null;
+    Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $dispatchedJob) use (&$finalizeJob) {
+        $finalizeJob = $dispatchedJob;
+
+        return true;
+    });
+
+    expect($finalizeJob)->toBeInstanceOf(FinalizeTranslationJob::class);
+
+    $finalizeJob->handle(
+        app(TranslationJobService::class),
+        app(AsyncTranslationResultHealthValidator::class),
+        app(GlossaryHitPersister::class),
+    );
+
+    $job->refresh()->load('result');
+
+    expect($job->status)->toBe(TranslationJobStatus::Succeeded);
+    expect($job->failure_reason)->toBeNull();
+    expect($job->result->translated_document_json['text'])
+        ->toBe('<p>First paragraph content</p><p>第二段内容</p>');
+    expect($job->result->meta_payload['full_fallback'])->toBeFalse();
+    expect($job->result->meta_payload['fallback_ratio'])->toBe(0.5);
+});
+
+it('applies the same full fallback failure rule when the async provider is hermes', function () {
+    Bus::fake();
+    Cache::flush();
+    config()->set('services.hermes', [
+        'base_url' => 'https://hermes.example.test/v1',
+        'api_key' => 'hermes-test-key',
+        'profile' => 'chemical-news-translator',
+        'model' => 'gpt-5-mini',
+        'timeout' => 120,
+        'html_parallelism' => 2,
+    ]);
+
+    SystemSetting::query()->updateOrCreate(
+        ['key' => 'translation.active_provider'],
+        ['value' => 'hermes'],
+    );
+
+    $html = '<p><span>第一段内容</span><strong>第二段内容</strong></p>';
+    $invalidSegmentDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+            1 => '第二段 content',
+        ],
+    ]);
+
+    Http::fake([
+        '*' => Http::response([
+            'translated_document' => $invalidSegmentDocument,
+            'glossary_hits' => [],
+            'risk_flags' => [],
+            'notes' => [],
+            'meta' => [
+                'schema_version' => 'v1',
+                'provider_model' => 'gpt-5-mini',
+            ],
+        ], 200),
+    ]);
+
+    $response = $this->postJson('/api/demo/translate/async', [
+        'input_type' => 'plain_text',
+        'document_type' => 'chemical_news',
+        'source_lang' => 'zh-CN',
+        'target_lang' => 'en',
+        'content' => [
+            'text' => $html,
+        ],
+    ]);
+
+    $job = TranslationJob::query()
+        ->where('job_uuid', $response->json('job_uuid'))
+        ->firstOrFail();
+
+    (new ProcessTranslationJob($job->id))->handle(
+        app(TranslationJobService::class),
+        app(TranslationService::class),
+    );
+
+    $finalizeJob = null;
+    Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $dispatchedJob) use (&$finalizeJob) {
+        $finalizeJob = $dispatchedJob;
+
+        return true;
+    });
+
+    $finalizeJob->handle(
+        app(TranslationJobService::class),
+        app(AsyncTranslationResultHealthValidator::class),
+        app(GlossaryHitPersister::class),
+    );
+
+    $job->refresh()->load('result');
+
+    expect($job->status)->toBe(TranslationJobStatus::Failed);
+    expect($job->failure_reason)->toBe('full_fallback: translated output fell back to the source content for all available HTML text nodes.');
+    expect($job->result->meta_payload['provider'])->toBe('hermes');
+    expect($job->result->meta_payload['provider_dispatch_mode'])->toBe('bounded_concurrent');
+});
+
+it('fails async hermes jobs early when the estimated runtime would exceed the worker budget', function () {
+    Bus::fake();
+    Cache::flush();
+    config()->set('services.hermes', [
+        'base_url' => 'https://hermes.example.test/v1',
+        'api_key' => 'hermes-test-key',
+        'profile' => 'chemical-news-translator',
+        'model' => 'gpt-5-mini',
+        'timeout' => 400,
+        'html_parallelism' => 2,
+    ]);
+
+    SystemSetting::query()->updateOrCreate(
+        ['key' => 'translation.active_provider'],
+        ['value' => 'hermes'],
+    );
+
+    $paragraph = str_repeat('第一段内容', 160);
+    $html = '<article>'.collect(range(1, 9))
+        ->map(fn (int $index): string => sprintf('<p>%s%s</p>', $paragraph, $index))
+        ->implode('').'</article>';
+
+    Http::fake();
+
+    $response = $this->postJson('/api/demo/translate/async', [
+        'input_type' => 'plain_text',
+        'document_type' => 'chemical_news',
+        'source_lang' => 'zh-CN',
+        'target_lang' => 'en',
+        'content' => [
+            'text' => $html,
+        ],
+    ]);
+
+    $job = TranslationJob::query()
+        ->where('job_uuid', $response->json('job_uuid'))
+        ->firstOrFail();
+
+    $processJob = new ProcessTranslationJob($job->id);
+
+    try {
+        $processJob->handle(
+            app(TranslationJobService::class),
+            app(TranslationService::class),
+        );
+
+        $this->fail('Expected the Hermes async job to be rejected by the budget guard.');
+    } catch (RuntimeException $exception) {
+        expect($exception->getMessage())->toStartWith('job_budget_exceeded:');
+        $processJob->failed($exception);
+    }
+
+    Http::assertNothingSent();
+
+    $job->refresh();
+
+    expect($job->status)->toBe(TranslationJobStatus::Failed);
+    expect($job->failure_reason)->toStartWith('job_budget_exceeded:');
 });
 
 it('batches html text nodes into fewer upstream translation requests', function () {

@@ -38,10 +38,14 @@ class HermesTranslationGateway
         $startedAt = microtime(true);
 
         try {
-            $response = $this->client->sendTranslationPayload(
-                $payload,
-                $enforceTargetLanguage,
-                $allowPartialTranslatedDocument,
+            $response = $this->decorateResponse(
+                $this->client->sendTranslationPayload(
+                    $payload,
+                    $enforceTargetLanguage,
+                    $allowPartialTranslatedDocument,
+                ),
+                $this->durationInMs($startedAt),
+                'single',
             );
 
             $this->safeLogTranslation(
@@ -87,23 +91,64 @@ class HermesTranslationGateway
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
-        $results = [];
+        if ($requests === []) {
+            return [];
+        }
+
+        $startedAt = [];
+        $clientRequests = [];
 
         foreach ($requests as $key => $request) {
-            try {
-                $results[$key] = [
-                    'response' => $this->translatePayload(
-                        (array) ($request['payload'] ?? []),
-                        array_key_exists('job_id', $request) ? $request['job_id'] : null,
-                        (bool) ($request['enforce_target_language'] ?? $enforceTargetLanguage),
-                        (bool) ($request['allow_partial_translated_document'] ?? $allowPartialTranslatedDocument),
-                    ),
-                ];
-            } catch (RuntimeException $exception) {
-                $results[$key] = [
-                    'exception' => $exception,
-                ];
+            $startedAt[$key] = microtime(true);
+            $clientRequests[$key] = [
+                'payload' => (array) ($request['payload'] ?? []),
+                'enforce_target_language' => (bool) ($request['enforce_target_language'] ?? $enforceTargetLanguage),
+                'allow_partial_translated_document' => (bool) ($request['allow_partial_translated_document'] ?? $allowPartialTranslatedDocument),
+            ];
+        }
+
+        $results = $this->client->sendTranslationPayloadsConcurrently($clientRequests, $concurrency);
+
+        foreach ($results as $key => $result) {
+            $request = $requests[$key] ?? [];
+            $payload = (array) ($request['payload'] ?? []);
+            $jobId = array_key_exists('job_id', $request) ? $request['job_id'] : null;
+            $context = (array) ($request['context'] ?? []);
+            $dispatchMode = $concurrency > 1 ? 'bounded_concurrent' : 'single';
+
+            if (isset($result['response']) && is_array($result['response'])) {
+                $result['response'] = $this->decorateResponse(
+                    $result['response'],
+                    $this->durationInMs($startedAt[$key] ?? microtime(true)),
+                    $dispatchMode,
+                );
+                $results[$key] = $result;
+
+                $this->safeLogTranslation(
+                    agentName: $this->translationAgent(),
+                    requestPayload: $payload,
+                    responsePayload: $result['response'],
+                    status: 'success',
+                    durationMs: $this->durationInMs($startedAt[$key] ?? microtime(true)),
+                    jobId: $jobId,
+                    context: array_merge($context, ['provider' => 'hermes']),
+                );
+
+                continue;
             }
+
+            $exception = $result['exception'] ?? new RuntimeException('Hermes concurrent translation request failed.');
+
+            $this->safeLogTranslation(
+                agentName: $this->translationAgent(),
+                requestPayload: $payload,
+                responsePayload: null,
+                status: 'failed',
+                durationMs: $this->durationInMs($startedAt[$key] ?? microtime(true)),
+                jobId: $jobId,
+                errorMessage: $exception instanceof Throwable ? $exception->getMessage() : (string) $exception,
+                context: array_merge($context, ['provider' => 'hermes']),
+            );
         }
 
         return $results;
@@ -114,6 +159,11 @@ class HermesTranslationGateway
         return max(1, (int) config('services.hermes.timeout', 120));
     }
 
+    public function htmlParallelism(): int
+    {
+        return max(1, (int) config('services.hermes.html_parallelism', 2));
+    }
+
     public function translationAgent(): string
     {
         return (string) config('services.hermes.profile', 'chemical-news-translator');
@@ -122,6 +172,16 @@ class HermesTranslationGateway
     protected function durationInMs(float $startedAt): int
     {
         return (int) round((microtime(true) - $startedAt) * 1000);
+    }
+
+    protected function decorateResponse(array $response, int $durationMs, string $dispatchMode): array
+    {
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
+            'provider_latency_ms' => max(0, $durationMs),
+            'provider_dispatch_mode' => $dispatchMode,
+        ]);
+
+        return $response;
     }
 
     protected function safeLogTranslation(
