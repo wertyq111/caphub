@@ -68,7 +68,7 @@ class OpenClawTranslationGateway
                 agentName: $this->translationAgent(),
                 requestPayload: $payload,
                 responsePayload: $response,
-                status: 'success',
+                status: 'succeeded',
                 durationMs: $this->durationInMs($startedAt),
                 jobId: $jobId,
                 context: [
@@ -150,7 +150,7 @@ class OpenClawTranslationGateway
                     agentName: $this->translationAgent(),
                     requestPayload: $payload,
                     responsePayload: $result['response'],
-                    status: 'success',
+                    status: 'succeeded',
                     durationMs: $this->durationInMs($startedAt[$key] ?? microtime(true)),
                     jobId: $jobId,
                     context: array_merge($context, [

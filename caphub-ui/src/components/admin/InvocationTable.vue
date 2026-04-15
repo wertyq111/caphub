@@ -26,7 +26,7 @@ const { locale, t } = useAdminI18n();
           <span class="font-medium text-slate-800">{{ row.agent_name }}</span>
         </template>
       </el-table-column>
-      <el-table-column :label="t('invocations.table.status')" width="110" align="center">
+      <el-table-column :label="t('invocations.table.status')" width="128" align="center" class-name="status-chip-cell">
         <template #default="{ row }">
           <el-tag size="small" :type="getStatusTagType(row.status)" effect="light" round>
             {{ getStatusLabel(row.status, t) }}

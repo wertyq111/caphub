@@ -20,8 +20,23 @@ class AiInvocationController extends Controller
         $paginator = AiInvocation::query()
             ->with('translationJob')
             ->orderByDesc('id')
-            ->paginate($perPage);
+            ->paginate($perPage)
+            ->through(function (AiInvocation $invocation): array {
+                $payload = $invocation->toArray();
+                $payload['status'] = $this->normalizeStatus($invocation->status);
+
+                return $payload;
+            });
 
         return response()->json($paginator);
+    }
+
+    protected function normalizeStatus(?string $status): ?string
+    {
+        if ($status === 'success') {
+            return 'succeeded';
+        }
+
+        return $status;
     }
 }
