@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  formatBytes,
   formatDuration,
   formatDurationMs,
   getInvocationCounts,
@@ -31,6 +32,12 @@ describe('adminPresentation', () => {
     expect(formatDurationMs(250)).toBe('250ms');
     expect(formatDurationMs(2400)).toBe('2.4s');
     expect(formatDurationMs(-1)).toBe('--');
+  });
+
+  it('formats text byte counts for invocation rows', () => {
+    expect(formatBytes(4096, 'en-US')).toBe('4,096 B');
+    expect(formatBytes(12, 'zh-CN')).toBe('12 B');
+    expect(formatBytes(null)).toBe('--');
   });
 
   it('normalizes success statuses for admin tags and labels', () => {

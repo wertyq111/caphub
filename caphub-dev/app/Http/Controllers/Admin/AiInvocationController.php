@@ -24,6 +24,7 @@ class AiInvocationController extends Controller
             ->through(function (AiInvocation $invocation): array {
                 $payload = $invocation->toArray();
                 $payload['status'] = $this->normalizeStatus($invocation->status);
+                $payload['text_bytes'] = $this->resolveTextBytes($invocation);
 
                 return $payload;
             });
@@ -38,5 +39,46 @@ class AiInvocationController extends Controller
         }
 
         return $status;
+    }
+
+    protected function resolveTextBytes(AiInvocation $invocation): ?int
+    {
+        $jobBytes = $this->sumStringBytes([
+            $invocation->translationJob?->source_title,
+            $invocation->translationJob?->source_summary,
+            $invocation->translationJob?->source_body,
+            $invocation->translationJob?->source_text,
+        ]);
+
+        if ($jobBytes !== null) {
+            return $jobBytes;
+        }
+
+        $documentByteLengths = data_get($invocation->request_payload, 'document_byte_lengths');
+
+        if (! is_array($documentByteLengths)) {
+            return null;
+        }
+
+        $total = collect($documentByteLengths)
+            ->filter(static fn (mixed $value): bool => is_int($value) || is_float($value))
+            ->sum(static fn (mixed $value): int => max(0, (int) round($value)));
+
+        return $total > 0 ? $total : null;
+    }
+
+    /**
+     * @param  array<int, mixed>  $values
+     */
+    protected function sumStringBytes(array $values): ?int
+    {
+        $strings = collect($values)
+            ->filter(static fn (mixed $value): bool => is_string($value) && $value !== '');
+
+        if ($strings->isEmpty()) {
+            return null;
+        }
+
+        return $strings->sum(static fn (string $value): int => strlen($value));
     }
 }

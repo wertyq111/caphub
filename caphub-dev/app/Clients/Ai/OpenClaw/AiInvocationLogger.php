@@ -54,6 +54,7 @@ class AiInvocationLogger
             'output_schema_version' => Arr::get($requestPayload, 'output_schema_version'),
             'document_keys' => array_keys($document),
             'document_lengths' => $this->summarizeDocumentLengths($document),
+            'document_byte_lengths' => $this->summarizeDocumentByteLengths($document),
             'source_lang' => Arr::get($requestPayload, 'context.source_lang'),
             'target_lang' => Arr::get($requestPayload, 'context.target_lang'),
             'glossary_entries_count' => count($glossaryEntries),
@@ -83,6 +84,7 @@ class AiInvocationLogger
         return [
             'translated_document_keys' => array_keys($translatedDocument),
             'translated_document_lengths' => $this->summarizeDocumentLengths($translatedDocument),
+            'translated_document_byte_lengths' => $this->summarizeDocumentByteLengths($translatedDocument),
             'meta' => Arr::get($responsePayload, 'meta'),
             'glossary_hits_count' => count((array) Arr::get($responsePayload, 'glossary_hits', [])),
             'risk_flags_count' => count((array) Arr::get($responsePayload, 'risk_flags', [])),
@@ -100,6 +102,19 @@ class AiInvocationLogger
         return collect($document)
             ->filter(static fn (mixed $value): bool => is_string($value))
             ->map(static fn (string $value): int => mb_strlen($value))
+            ->all();
+    }
+
+    /**
+     * 统计文档各字段 UTF-8 字节长度，参数：$document 文档字段数组。
+     * @since 2026-04-15
+     * @author zhouxufeng
+     */
+    protected function summarizeDocumentByteLengths(array $document): array
+    {
+        return collect($document)
+            ->filter(static fn (mixed $value): bool => is_string($value))
+            ->map(static fn (string $value): int => strlen($value))
             ->all();
     }
 }

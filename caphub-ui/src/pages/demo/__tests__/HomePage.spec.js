@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { mount, RouterLinkStub } from '@vue/test-utils';
+import { flushPromises, mount, RouterLinkStub } from '@vue/test-utils';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { createPinia } from 'pinia';
 import HomePage from '../HomePage.vue';
@@ -23,7 +23,7 @@ describe('HomePage', () => {
     });
   });
 
-  it('renders the matrix hub hero and translation entry', () => {
+  it('renders the matrix hub hero and translation entry', async () => {
     const wrapper = mount(HomePage, {
       global: {
         plugins: [createPinia()],
@@ -33,9 +33,13 @@ describe('HomePage', () => {
       },
     });
 
+    await flushPromises();
+
     expect(wrapper.text()).toContain('代理网络 Nexus');
     expect(wrapper.text()).toContain('系统核心控制台');
     expect(wrapper.text()).toContain('NEURAL LINK');
     expect(wrapper.text()).toContain('系统脉搏');
+    expect(wrapper.text()).toContain('响应耗时');
+    expect(wrapper.text()).not.toContain('部署新代理');
   });
 });
