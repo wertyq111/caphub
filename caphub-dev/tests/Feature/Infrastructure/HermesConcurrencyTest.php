@@ -88,7 +88,7 @@ it('dispatches Hermes concurrent translation requests through the HTTP pool clie
 
     Http::assertSentCount(2);
     Http::assertSent(function (Request $request) {
-        expect($request->url())->toEndWith('chat/completions');
+        expect($request->url())->toBe('https://hermes.example.test/v1/chat/completions');
         expect($request->hasHeader('Authorization', 'Bearer hermes-test-key'))->toBeTrue();
 
         return true;

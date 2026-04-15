@@ -122,19 +122,18 @@ class HermesClient
      */
     protected function dispatchConcurrentRequests(array $descriptors, int $concurrency): array
     {
-        $baseUrl = $this->baseUrl();
+        $translationUrl = $this->baseUrl().'/chat/completions';
         $apiKey = $this->apiKey();
         $timeout = $this->timeout();
 
-        return Http::baseUrl($baseUrl)
-            ->pool(function (Pool $pool) use ($descriptors, $apiKey, $timeout): void {
+        return Http::pool(function (Pool $pool) use ($descriptors, $translationUrl, $apiKey, $timeout): void {
                 foreach ($descriptors as $key => $descriptor) {
                     $pool->as((string) $key)
                         ->acceptJson()
                         ->asJson()
                         ->timeout($timeout)
                         ->withToken($apiKey)
-                        ->post('/chat/completions', $descriptor['request_payload']);
+                        ->post($translationUrl, $descriptor['request_payload']);
                 }
             }, max(1, $concurrency));
     }
