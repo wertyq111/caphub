@@ -126,6 +126,14 @@ export function formatDurationMs(durationMs) {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
+export function formatBytes(value, localeCode = 'zh-CN') {
+  if (typeof value !== 'number' || Number.isNaN(value) || value < 0) {
+    return '--';
+  }
+
+  return `${new Intl.NumberFormat(localeCode).format(Math.round(value))} B`;
+}
+
 export function resolveRequestError(error, fallback = 'Something went wrong.') {
   return error?.response?.data?.message ?? fallback;
 }
