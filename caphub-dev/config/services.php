@@ -56,4 +56,12 @@ return [
         'chat_profile' => env('HERMES_CHAT_PROFILE', 'caphub-assistant'),
     ],
 
+    'github_models' => [
+        'base_url' => env('GITHUB_MODELS_BASE_URL', 'https://models.github.ai/inference'),
+        'api_key' => env('GITHUB_MODELS_API_KEY'),
+        'model' => env('GITHUB_MODELS_MODEL', 'openai/gpt-5-mini'),
+        'timeout' => (int) env('GITHUB_MODELS_TIMEOUT', 45),
+        'html_parallelism' => (int) env('GITHUB_MODELS_HTML_PARALLELISM', 2),
+    ],
+
 ];

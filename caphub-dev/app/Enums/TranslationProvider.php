@@ -6,6 +6,7 @@ enum TranslationProvider: string
 {
     case OpenClaw = 'openclaw';
     case Hermes = 'hermes';
+    case GitHubModels = 'github_models';
 
     /**
      * 返回可选的翻译提供方列表。

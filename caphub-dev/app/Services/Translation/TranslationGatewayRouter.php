@@ -2,6 +2,7 @@
 
 namespace App\Services\Translation;
 
+use App\Clients\Ai\GitHubModels\GitHubModelsTranslationGateway;
 use App\Clients\Ai\Hermes\HermesTranslationGateway;
 use App\Clients\Ai\OpenClaw\OpenClawTranslationGateway;
 use App\Enums\TranslationProvider;
@@ -12,6 +13,7 @@ class TranslationGatewayRouter
         protected TranslationProviderSettings $settings,
         protected OpenClawTranslationGateway $openClawGateway,
         protected HermesTranslationGateway $hermesGateway,
+        protected GitHubModelsTranslationGateway $githubModelsGateway,
     ) {}
 
     public function translate(array $inputDocument, array $glossaryEntries = [], array $constraints = [], ?int $jobId = null): array
@@ -82,11 +84,12 @@ class TranslationGatewayRouter
         return $this->activeGateway()->htmlParallelism();
     }
 
-    protected function activeGateway(): OpenClawTranslationGateway|HermesTranslationGateway
+    protected function activeGateway(): OpenClawTranslationGateway|HermesTranslationGateway|GitHubModelsTranslationGateway
     {
         return match ($this->settings->current()) {
             TranslationProvider::OpenClaw => $this->openClawGateway,
             TranslationProvider::Hermes => $this->hermesGateway,
+            TranslationProvider::GitHubModels => $this->githubModelsGateway,
         };
     }
 }

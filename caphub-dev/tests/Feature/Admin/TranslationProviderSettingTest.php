@@ -22,6 +22,13 @@ beforeEach(function () {
         'model' => 'gpt-5-mini',
         'timeout' => 120,
     ]);
+
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
+    ]);
 });
 
 it('returns the current translation provider for authenticated admins', function () {
@@ -35,7 +42,9 @@ it('returns the current translation provider for authenticated admins', function
         ->assertJsonPath('providers.0.key', 'openclaw')
         ->assertJsonPath('providers.0.configured', true)
         ->assertJsonPath('providers.1.key', 'hermes')
-        ->assertJsonPath('providers.1.configured', true);
+        ->assertJsonPath('providers.1.configured', true)
+        ->assertJsonPath('providers.2.key', 'github_models')
+        ->assertJsonPath('providers.2.configured', true);
 });
 
 it('updates the active translation provider to hermes', function () {
@@ -69,4 +78,21 @@ it('rejects switching to an unconfigured translation provider', function () {
         ->assertJsonPath('message', 'Translation provider [hermes] is not configured.');
 
     expect(SystemSetting::query()->where('key', 'translation.active_provider')->exists())->toBeFalse();
+});
+
+it('updates the active translation provider to github models', function () {
+    Sanctum::actingAs(User::factory()->create());
+
+    $response = $this->putJson('/api/admin/system/translation-provider', [
+        'provider' => 'github_models',
+    ]);
+
+    $response
+        ->assertOk()
+        ->assertJsonPath('provider', 'github_models');
+
+    $this->assertDatabaseHas('system_settings', [
+        'key' => 'translation.active_provider',
+        'value' => 'github_models',
+    ]);
 });

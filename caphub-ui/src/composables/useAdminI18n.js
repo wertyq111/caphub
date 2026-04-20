@@ -118,6 +118,7 @@ const messages = {
       options: {
         openclaw: 'OpenClaw',
         hermes: 'Hermes',
+        github_models: 'GitHub Models',
       },
     },
     glossary: {
@@ -312,6 +313,7 @@ const messages = {
       options: {
         openclaw: 'OpenClaw',
         hermes: 'Hermes',
+        github_models: 'GitHub Models',
       },
     },
     glossary: {

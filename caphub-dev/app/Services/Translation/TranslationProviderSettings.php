@@ -61,6 +61,7 @@ class TranslationProviderSettings
         return match ($provider) {
             TranslationProvider::OpenClaw => $this->isOpenClawConfigured(),
             TranslationProvider::Hermes => $this->isHermesConfigured(),
+            TranslationProvider::GitHubModels => $this->isGitHubModelsConfigured(),
         };
     }
 
@@ -77,5 +78,12 @@ class TranslationProviderSettings
             && trim((string) config('services.hermes.api_key', '')) !== ''
             && trim((string) config('services.hermes.profile', '')) !== ''
             && trim((string) config('services.hermes.model', '')) !== '';
+    }
+
+    protected function isGitHubModelsConfigured(): bool
+    {
+        return trim((string) config('services.github_models.base_url', '')) !== ''
+            && trim((string) config('services.github_models.api_key', '')) !== ''
+            && trim((string) config('services.github_models.model', '')) !== '';
     }
 }
