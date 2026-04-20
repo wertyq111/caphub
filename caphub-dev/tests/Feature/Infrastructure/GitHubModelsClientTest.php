@@ -104,6 +104,59 @@ it('dispatches github models concurrent translation requests through the HTTP po
     expect(data_get($results, '1.response.meta.retry_count'))->toBe(0);
 });
 
+it('retries github models single translation requests after 429 responses', function () {
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
+        'retry_times' => 1,
+    ]);
+
+    Http::fake([
+        '*' => Http::sequence()
+            ->push([
+                'error' => 'rate_limited',
+            ], 429, [
+                'Retry-After' => '0',
+            ])
+            ->push([
+                'translated_document' => [
+                    'text' => 'Ethylene prices rose.',
+                ],
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openai/gpt-5-mini',
+                ],
+            ], 200),
+    ]);
+
+    $response = app(GitHubModelsClient::class)->sendTranslationPayload([
+        'task_type' => 'translation',
+        'task_subtype' => 'chemical_news',
+        'input_document' => [
+            'text' => '乙烯价格上涨。',
+        ],
+        'context' => [
+            'source_lang' => 'zh',
+            'target_lang' => 'en',
+            'glossary_entries' => [],
+            'constraints' => [
+                'preserve_units' => true,
+                'preserve_entities' => true,
+            ],
+        ],
+        'output_schema_version' => 'v1',
+    ]);
+
+    Http::assertSentCount(2);
+    expect(data_get($response, 'translated_document.text'))->toBe('Ethylene prices rose.');
+    expect(data_get($response, 'meta.retry_count'))->toBe(1);
+});
+
 it('routes github models concurrent translation through the batch client instead of serial single calls', function () {
     $client = Mockery::mock(GitHubModelsClient::class);
     $logger = Mockery::mock(AiInvocationLogger::class);

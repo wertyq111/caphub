@@ -19,6 +19,8 @@ class GitHubModelsClient
 
     protected const API_VERSION = '2022-11-28';
 
+    protected const DEFAULT_RETRY_TIMES = 2;
+
     /**
      * 通过 GitHub Models 执行翻译并返回结构化结果。
      *
@@ -30,21 +32,37 @@ class GitHubModelsClient
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
-        try {
-            $response = $this->request()
-                ->post('/chat/completions', $this->openAiRequestPayload($payload))
-                ->throw()
-                ->json() ?? [];
+        $requestPayload = $this->openAiRequestPayload($payload);
+        $attempt = 0;
+        $maxAttempts = $this->retryTimes() + 1;
+        $lastException = null;
 
-            return $this->withRetryCount($this->validateTranslationResponse(
-                $this->normalizeResponsePayload($response),
-                $payload,
-                $enforceTargetLanguage,
-                $allowPartialTranslatedDocument,
-            ), 0);
-        } catch (Throwable $throwable) {
-            throw $this->normalizeException($throwable);
+        while ($attempt < $maxAttempts) {
+            try {
+                $response = $this->request()
+                    ->post('/chat/completions', $requestPayload)
+                    ->throw()
+                    ->json() ?? [];
+
+                return $this->withRetryCount($this->validateTranslationResponse(
+                    $this->normalizeResponsePayload($response),
+                    $payload,
+                    $enforceTargetLanguage,
+                    $allowPartialTranslatedDocument,
+                ), $attempt);
+            } catch (Throwable $throwable) {
+                $lastException = $this->normalizeException($throwable);
+                $attempt++;
+
+                if (! $this->shouldRetryAfter($throwable, $attempt, $maxAttempts)) {
+                    throw $lastException;
+                }
+
+                usleep($this->retryDelayInMicroseconds($throwable, $attempt));
+            }
         }
+
+        throw $lastException ?? new RuntimeException('GitHub Models translation request failed.');
     }
 
     /**
@@ -72,6 +90,28 @@ class GitHubModelsClient
                 'enforce_target_language' => (bool) ($request['enforce_target_language'] ?? true),
                 'allow_partial_translated_document' => (bool) ($request['allow_partial_translated_document'] ?? false),
             ];
+        }
+
+        if ($concurrency <= 1) {
+            $results = [];
+
+            foreach ($descriptors as $key => $descriptor) {
+                try {
+                    $results[$key] = [
+                        'response' => $this->sendTranslationPayload(
+                            $descriptor['payload'],
+                            $descriptor['enforce_target_language'],
+                            $descriptor['allow_partial_translated_document'],
+                        ),
+                    ];
+                } catch (Throwable $throwable) {
+                    $results[$key] = [
+                        'exception' => $this->normalizeException($throwable),
+                    ];
+                }
+            }
+
+            return $results;
         }
 
         $responses = $this->dispatchConcurrentRequests($descriptors, $concurrency);
@@ -191,6 +231,11 @@ class GitHubModelsClient
     protected function timeout(): int
     {
         return max(1, (int) config('services.github_models.timeout', 45));
+    }
+
+    protected function retryTimes(): int
+    {
+        return max(0, (int) config('services.github_models.retry_times', self::DEFAULT_RETRY_TIMES));
     }
 
     protected function providerModel(): string
@@ -447,6 +492,32 @@ class GitHubModelsClient
         }
 
         return false;
+    }
+
+    protected function shouldRetryAfter(Throwable $throwable, int $attempt, int $maxAttempts): bool
+    {
+        return $attempt < $maxAttempts && $this->isTransientUpstreamFailure($throwable);
+    }
+
+    protected function retryDelayInMicroseconds(Throwable $throwable, int $attempt): int
+    {
+        if ($throwable instanceof RequestException) {
+            $retryAfter = $throwable->response?->header('Retry-After');
+
+            if (is_string($retryAfter) && $retryAfter !== '') {
+                if (ctype_digit($retryAfter)) {
+                    return max(0, (int) $retryAfter) * 1_000_000;
+                }
+
+                $retryAt = strtotime($retryAfter);
+
+                if ($retryAt !== false) {
+                    return max(0, $retryAt - time()) * 1_000_000;
+                }
+            }
+        }
+
+        return max(1, min(5, $attempt * 2)) * 1_000_000;
     }
 
     protected function toRuntimeException(Throwable $throwable): RuntimeException
