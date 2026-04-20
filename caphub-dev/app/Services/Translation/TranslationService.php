@@ -589,6 +589,10 @@ class TranslationService
                 'html_segment_count' => count($compiled['segments']),
                 'html_batch_count' => $translation['batch_count'],
                 'html_parallelism' => $this->htmlBatchParallelism(),
+                'html_batch_text_limit' => $this->htmlSegmentBatchTextLimit(),
+                'html_max_batch_segments' => $this->htmlMaxBatchSegments(),
+                'html_retry_batch_text_limit' => $this->htmlRetryBatchTextLimit(),
+                'html_retry_max_batch_segments' => $this->htmlRetryMaxBatchSegments(),
                 'html_fallback_segment_count' => $translation['fallback_segment_count'],
                 'translated_text_nodes' => $translatedTextNodes,
                 'fallback_text_nodes' => $fallbackTextNodes,
@@ -611,9 +615,11 @@ class TranslationService
     protected function chunkHtmlSegments(
         array $segments,
         ?array $segmentIndexes = null,
-        int $textLimit = self::ASYNC_HTML_SEGMENT_BATCH_TEXT_LIMIT,
-        int $maxSegments = self::ASYNC_HTML_MAX_BATCH_SEGMENTS,
+        ?int $textLimit = null,
+        ?int $maxSegments = null,
     ): array {
+        $textLimit ??= $this->htmlSegmentBatchTextLimit();
+        $maxSegments ??= $this->htmlMaxBatchSegments();
         $segmentIndexes ??= array_keys($segments);
         $batches = [];
         $buffer = [];
@@ -1034,8 +1040,8 @@ class TranslationService
             $retryBatches = $this->chunkHtmlSegments(
                 $segments,
                 $segmentIndexes,
-                self::ASYNC_HTML_RETRY_BATCH_TEXT_LIMIT,
-                self::ASYNC_HTML_RETRY_MAX_BATCH_SEGMENTS,
+                $this->htmlRetryBatchTextLimit(),
+                $this->htmlRetryMaxBatchSegments(),
             );
 
             $requests = [];
@@ -1618,7 +1624,47 @@ class TranslationService
 
     protected function htmlBatchParallelism(): int
     {
+        if ($this->gateway->activeProvider() === \App\Enums\TranslationProvider::GitHubModels) {
+            return 1;
+        }
+
         return max(1, $this->gateway->htmlParallelism());
+    }
+
+    protected function htmlSegmentBatchTextLimit(): int
+    {
+        if ($this->gateway->activeProvider() === \App\Enums\TranslationProvider::GitHubModels) {
+            return max(1, (int) config('services.github_models.html_segment_batch_text_limit', 900));
+        }
+
+        return self::ASYNC_HTML_SEGMENT_BATCH_TEXT_LIMIT;
+    }
+
+    protected function htmlMaxBatchSegments(): int
+    {
+        if ($this->gateway->activeProvider() === \App\Enums\TranslationProvider::GitHubModels) {
+            return max(1, (int) config('services.github_models.html_max_batch_segments', 6));
+        }
+
+        return self::ASYNC_HTML_MAX_BATCH_SEGMENTS;
+    }
+
+    protected function htmlRetryBatchTextLimit(): int
+    {
+        if ($this->gateway->activeProvider() === \App\Enums\TranslationProvider::GitHubModels) {
+            return max(1, (int) config('services.github_models.html_retry_batch_text_limit', 450));
+        }
+
+        return self::ASYNC_HTML_RETRY_BATCH_TEXT_LIMIT;
+    }
+
+    protected function htmlRetryMaxBatchSegments(): int
+    {
+        if ($this->gateway->activeProvider() === \App\Enums\TranslationProvider::GitHubModels) {
+            return max(1, (int) config('services.github_models.html_retry_max_batch_segments', 3));
+        }
+
+        return self::ASYNC_HTML_RETRY_MAX_BATCH_SEGMENTS;
     }
 
     protected function assertWithinAsyncJobBudget(

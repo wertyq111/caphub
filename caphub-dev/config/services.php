@@ -61,7 +61,11 @@ return [
         'api_key' => env('GITHUB_MODELS_API_KEY'),
         'model' => env('GITHUB_MODELS_MODEL', 'openai/gpt-5-mini'),
         'timeout' => (int) env('GITHUB_MODELS_TIMEOUT', 45),
-        'html_parallelism' => (int) env('GITHUB_MODELS_HTML_PARALLELISM', 2),
+        'html_parallelism' => (int) env('GITHUB_MODELS_HTML_PARALLELISM', 1),
+        'html_segment_batch_text_limit' => (int) env('GITHUB_MODELS_HTML_SEGMENT_BATCH_TEXT_LIMIT', 900),
+        'html_max_batch_segments' => (int) env('GITHUB_MODELS_HTML_MAX_BATCH_SEGMENTS', 6),
+        'html_retry_batch_text_limit' => (int) env('GITHUB_MODELS_HTML_RETRY_BATCH_TEXT_LIMIT', 450),
+        'html_retry_max_batch_segments' => (int) env('GITHUB_MODELS_HTML_RETRY_MAX_BATCH_SEGMENTS', 3),
     ],
 
 ];

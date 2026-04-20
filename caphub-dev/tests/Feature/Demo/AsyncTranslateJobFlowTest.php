@@ -11,6 +11,7 @@ use App\Jobs\ProcessTranslationJob;
 use App\Models\Glossary;
 use App\Models\SystemSetting;
 use App\Models\TranslationJob;
+use Illuminate\Http\Client\Request;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Bus;
@@ -964,6 +965,109 @@ it('retries html article body segments before falling back to original html', fu
         expect($finalizeJob->result['response']['meta']['body_html_mode'])->toBeTrue();
         expect($finalizeJob->result['response']['meta']['body_fallback_text_nodes'])->toBe(0);
         expect($finalizeJob->result['response']['meta']['body_html_strategy'])->toBe('semantic_segment_parallel');
+        expect($finalizeJob->result['response']['meta']['body_html_fallback_segment_count'])->toBe(0);
+
+        return true;
+    });
+});
+
+it('uses smaller sequential html segment batches for github models article translations', function () {
+    Bus::fake();
+    Cache::flush();
+
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
+        'html_parallelism' => 1,
+        'html_segment_batch_text_limit' => 20,
+        'html_max_batch_segments' => 1,
+        'html_retry_batch_text_limit' => 10,
+        'html_retry_max_batch_segments' => 1,
+    ]);
+
+    SystemSetting::query()->updateOrCreate([
+        'key' => 'translation.active_provider',
+    ], [
+        'value' => 'github_models',
+    ]);
+
+    $html = '<p><span>第一段内容</span></p><p><strong>第二段内容</strong></p>';
+    $translatedFirstSegment = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => 'First paragraph content',
+        ],
+    ]);
+    $translatedSecondSegment = fakeSemanticSegmentDocument($html, [
+        1 => [
+            0 => 'Second paragraph content',
+        ],
+    ]);
+
+    Http::fake([
+        '*' => Http::sequence()
+            ->push([
+                'translated_document' => $translatedFirstSegment,
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openai/gpt-5-mini',
+                ],
+            ], 200)
+            ->push([
+                'translated_document' => $translatedSecondSegment,
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openai/gpt-5-mini',
+                ],
+            ], 200),
+    ]);
+
+    $response = $this->postJson('/api/demo/translate/async', [
+        'input_type' => 'article_payload',
+        'document_type' => 'chemical_news',
+        'source_lang' => 'zh-CN',
+        'target_lang' => 'en',
+        'content' => [
+            'body' => $html,
+        ],
+    ]);
+
+    $job = TranslationJob::query()
+        ->where('job_uuid', $response->json('job_uuid'))
+        ->firstOrFail();
+
+    (new ProcessTranslationJob($job->id))->handle(
+        app(TranslationJobService::class),
+        app(TranslationService::class),
+    );
+
+    Http::assertSentCount(2);
+    Http::assertSent(function (Request $request) {
+        $payload = $request->data();
+        $content = (string) data_get($payload, 'messages.1.content', '');
+        $decoded = json_decode($content, true);
+
+        expect($request->url())->toBe('https://models.github.ai/inference/chat/completions');
+        expect($payload['model'])->toBe('openai/gpt-5-mini');
+        expect(count((array) data_get($decoded, 'input_document', [])))->toBe(1);
+
+        return true;
+    });
+
+    Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
+        expect($finalizeJob->result['response']['translated_document']['body'])
+            ->toBe('<p><span>First paragraph content</span></p><p><strong>Second paragraph content</strong></p>');
+        expect($finalizeJob->result['response']['meta']['body_html_parallelism'])->toBe(1);
+        expect($finalizeJob->result['response']['meta']['body_html_batch_text_limit'])->toBe(20);
+        expect($finalizeJob->result['response']['meta']['body_html_max_batch_segments'])->toBe(1);
+        expect($finalizeJob->result['response']['meta']['body_html_batch_count'])->toBe(2);
         expect($finalizeJob->result['response']['meta']['body_html_fallback_segment_count'])->toBe(0);
 
         return true;
