@@ -1,5 +1,6 @@
 <?php
 
+use App\Clients\Ai\GitHubModels\GitHubModelsClient;
 use App\Services\TaskCenter\TranslationJobService;
 use App\Services\Translation\AsyncTranslationResultHealthValidator;
 use App\Services\Translation\GlossaryHitPersister;
@@ -42,12 +43,17 @@ function fakeSemanticSegmentDocument(string $html, array $translationsBySegmentI
 
 it('dispatches an async translation job and allows polling for status and result', function () {
     Bus::fake();
-    config()->set('services.openclaw', [
-        'base_url' => 'https://openclaw.example.test',
-        'api_key' => 'test-api-key',
-        'translation_agent' => 'chemical-news-translator',
-        'timeout' => 30,
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
     ]);
+
+    SystemSetting::query()->updateOrCreate(
+        ['key' => 'translation.active_provider'],
+        ['value' => 'hermes'],
+    );
 
     Glossary::query()->create([
         'term' => '乙烯',
@@ -60,8 +66,11 @@ it('dispatches an async translation job and allows polling for status and result
         'notes' => null,
     ]);
 
-    Http::fake([
-        '*' => Http::response([
+    $mockClient = Mockery::mock(GitHubModelsClient::class);
+    $mockClient
+        ->shouldReceive('sendTranslationPayload')
+        ->once()
+        ->andReturn([
             'translated_document' => [
                 'text' => 'Ethylene prices rose.',
             ],
@@ -75,9 +84,11 @@ it('dispatches an async translation job and allows polling for status and result
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
+                'provider_model' => 'openai/gpt-5-mini',
             ],
-        ], 200),
-    ]);
+        ]);
+
+    app()->instance(GitHubModelsClient::class, $mockClient);
 
     $response = $this->postJson('/api/demo/translate/async', [
         'input_type' => 'plain_text',
@@ -124,8 +135,8 @@ it('dispatches an async translation job and allows polling for status and result
 
     $this->assertDatabaseHas('ai_invocations', [
         'job_id' => $job->id,
-        'agent_name' => 'chemical-news-translator',
-        'status' => 'success',
+        'agent_name' => 'openai/gpt-5-mini',
+        'status' => 'succeeded',
     ]);
 
     (new FinalizeTranslationJob($job->id, [
@@ -145,6 +156,7 @@ it('dispatches an async translation job and allows polling for status and result
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
+                'provider_model' => 'openai/gpt-5-mini',
             ],
         ],
     ]))->handle(
@@ -971,20 +983,16 @@ it('retries html article body segments before falling back to original html', fu
     });
 });
 
-it('uses smaller sequential html segment batches for github models article translations', function () {
+it('ignores a legacy github_models setting for async article translations and keeps using the long-text provider', function () {
     Bus::fake();
     Cache::flush();
 
-    config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
-        'html_parallelism' => 1,
-        'html_segment_batch_text_limit' => 20,
-        'html_max_batch_segments' => 1,
-        'html_retry_batch_text_limit' => 10,
-        'html_retry_max_batch_segments' => 1,
+    config()->set('services.openclaw', [
+        'base_url' => 'https://openclaw.example.test',
+        'api_key' => 'test-api-key',
+        'translation_agent' => 'chemical-news-translator',
+        'timeout' => 120,
+        'html_parallelism' => 2,
     ]);
 
     SystemSetting::query()->updateOrCreate([
@@ -1004,29 +1012,19 @@ it('uses smaller sequential html segment batches for github models article trans
             0 => 'Second paragraph content',
         ],
     ]);
+    $translatedBatchDocument = array_merge($translatedFirstSegment, $translatedSecondSegment);
 
     Http::fake([
-        '*' => Http::sequence()
-            ->push([
-                'translated_document' => $translatedFirstSegment,
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => 'v1',
-                    'provider_model' => 'openai/gpt-5-mini',
-                ],
-            ], 200)
-            ->push([
-                'translated_document' => $translatedSecondSegment,
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => 'v1',
-                    'provider_model' => 'openai/gpt-5-mini',
-                ],
-            ], 200),
+        '*' => Http::response([
+            'translated_document' => $translatedBatchDocument,
+            'glossary_hits' => [],
+            'risk_flags' => [],
+            'notes' => [],
+            'meta' => [
+                'schema_version' => 'v1',
+                'provider_model' => 'openclaw/chemical-news-translator',
+            ],
+        ], 200),
     ]);
 
     $response = $this->postJson('/api/demo/translate/async', [
@@ -1048,15 +1046,9 @@ it('uses smaller sequential html segment batches for github models article trans
         app(TranslationService::class),
     );
 
-    Http::assertSentCount(2);
+    Http::assertSentCount(1);
     Http::assertSent(function (Request $request) {
-        $payload = $request->data();
-        $content = (string) data_get($payload, 'messages.1.content', '');
-        $decoded = json_decode($content, true);
-
-        expect($request->url())->toBe('https://models.github.ai/inference/chat/completions');
-        expect($payload['model'])->toBe('openai/gpt-5-mini');
-        expect(count((array) data_get($decoded, 'input_document', [])))->toBe(1);
+        expect($request->url())->toContain('https://openclaw.example.test');
 
         return true;
     });
@@ -1064,10 +1056,11 @@ it('uses smaller sequential html segment batches for github models article trans
     Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
         expect($finalizeJob->result['response']['translated_document']['body'])
             ->toBe('<p><span>First paragraph content</span></p><p><strong>Second paragraph content</strong></p>');
-        expect($finalizeJob->result['response']['meta']['body_html_parallelism'])->toBe(1);
-        expect($finalizeJob->result['response']['meta']['body_html_batch_text_limit'])->toBe(20);
-        expect($finalizeJob->result['response']['meta']['body_html_max_batch_segments'])->toBe(1);
-        expect($finalizeJob->result['response']['meta']['body_html_batch_count'])->toBe(2);
+        expect($finalizeJob->result['response']['meta']['provider'])->toBe('openclaw');
+        expect($finalizeJob->result['response']['meta']['body_html_parallelism'])->toBe(2);
+        expect($finalizeJob->result['response']['meta']['body_html_batch_text_limit'])->toBe(1800);
+        expect($finalizeJob->result['response']['meta']['body_html_max_batch_segments'])->toBe(24);
+        expect($finalizeJob->result['response']['meta']['body_html_batch_count'])->toBe(1);
         expect($finalizeJob->result['response']['meta']['body_html_fallback_segment_count'])->toBe(0);
 
         return true;

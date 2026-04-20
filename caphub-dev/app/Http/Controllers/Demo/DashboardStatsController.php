@@ -31,7 +31,7 @@ class DashboardStatsController extends Controller
 
             return [
                 'key' => $providerKey,
-                'name' => $provider === TranslationProvider::OpenClaw ? 'OpenClaw' : 'Hermes',
+                'name' => $provider->displayName(),
                 'configured' => $configured,
                 'active' => $provider === $activeProvider,
                 'stats_24h' => [

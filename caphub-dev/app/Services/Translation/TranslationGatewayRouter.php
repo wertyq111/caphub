@@ -9,6 +9,8 @@ use App\Enums\TranslationProvider;
 
 class TranslationGatewayRouter
 {
+    protected ?TranslationProvider $overrideProvider = null;
+
     public function __construct(
         protected TranslationProviderSettings $settings,
         protected OpenClawTranslationGateway $openClawGateway,
@@ -66,7 +68,7 @@ class TranslationGatewayRouter
 
     public function activeProvider(): TranslationProvider
     {
-        return $this->settings->current();
+        return $this->overrideProvider ?? $this->settings->current();
     }
 
     public function activeAgent(): string
@@ -84,9 +86,28 @@ class TranslationGatewayRouter
         return $this->activeGateway()->htmlParallelism();
     }
 
+    /**
+     * 在单次翻译流程里临时强制指定 provider，避免短文本和长文本共享同一全局设置。
+     *
+     * @template TReturn
+     * @param  callable(): TReturn  $callback
+     * @return TReturn
+     */
+    public function usingProvider(TranslationProvider $provider, callable $callback): mixed
+    {
+        $previousProvider = $this->overrideProvider;
+        $this->overrideProvider = $provider;
+
+        try {
+            return $callback();
+        } finally {
+            $this->overrideProvider = $previousProvider;
+        }
+    }
+
     protected function activeGateway(): OpenClawTranslationGateway|HermesTranslationGateway|GitHubModelsTranslationGateway
     {
-        return match ($this->settings->current()) {
+        return match ($this->activeProvider()) {
             TranslationProvider::OpenClaw => $this->openClawGateway,
             TranslationProvider::Hermes => $this->hermesGateway,
             TranslationProvider::GitHubModels => $this->githubModelsGateway,

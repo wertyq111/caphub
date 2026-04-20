@@ -16,7 +16,7 @@ class UpdateTranslationProviderRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'provider' => ['required', 'string', Rule::in(TranslationProvider::values())],
+            'provider' => ['required', 'string', Rule::in(TranslationProvider::manualValues())],
         ];
     }
 }

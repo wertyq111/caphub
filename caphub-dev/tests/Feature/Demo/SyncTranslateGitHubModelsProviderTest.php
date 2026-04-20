@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Cache;
 
 uses(RefreshDatabase::class);
 
-it('uses the github models provider for sync translation when the admin setting selects github models', function () {
+it('uses the github models provider for sync short text even when the admin setting selects hermes', function () {
     Cache::flush();
 
     config()->set('services.github_models', [
@@ -19,7 +19,7 @@ it('uses the github models provider for sync translation when the admin setting 
 
     SystemSetting::query()->create([
         'key' => 'translation.active_provider',
-        'value' => 'github_models',
+        'value' => 'hermes',
     ]);
 
     $mockClient = Mockery::mock(GitHubModelsClient::class);

@@ -1,5 +1,6 @@
 <?php
 
+use App\Clients\Ai\GitHubModels\GitHubModelsClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
@@ -7,15 +8,18 @@ use Illuminate\Support\Facades\Http;
 uses(RefreshDatabase::class);
 
 it('returns a translated text document for the sync translation endpoint', function () {
-    config()->set('services.openclaw', [
-        'base_url' => 'https://openclaw.example.test',
-        'api_key' => 'test-api-key',
-        'translation_agent' => 'chemical-news-translator',
-        'timeout' => 30,
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
     ]);
 
-    Http::fake([
-        '*' => Http::response([
+    $mockClient = Mockery::mock(GitHubModelsClient::class);
+    $mockClient
+        ->shouldReceive('sendTranslationPayload')
+        ->once()
+        ->andReturn([
             'translated_document' => [
                 'text' => 'Ethylene prices rose.',
             ],
@@ -25,8 +29,9 @@ it('returns a translated text document for the sync translation endpoint', funct
             'meta' => [
                 'schema_version' => 'v1',
             ],
-        ], 200),
-    ]);
+        ]);
+
+    app()->instance(GitHubModelsClient::class, $mockClient);
 
     $response = $this->postJson('/api/demo/translate/sync', [
         'input_type' => 'plain_text',
@@ -46,8 +51,8 @@ it('returns a translated text document for the sync translation endpoint', funct
 
     $this->assertDatabaseHas('ai_invocations', [
         'job_id' => $job->id,
-        'agent_name' => 'chemical-news-translator',
-        'status' => 'success',
+        'agent_name' => 'openai/gpt-5-mini',
+        'status' => 'succeeded',
     ]);
 });
 
@@ -67,14 +72,20 @@ it('rejects mismatched content for plain text input', function () {
 });
 
 it('returns a stable json error when the upstream translation call fails', function () {
-    config()->set('services.openclaw', [
-        'base_url' => 'https://openclaw.example.test',
-        'api_key' => 'test-api-key',
-        'translation_agent' => 'chemical-news-translator',
-        'timeout' => 30,
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
     ]);
 
-    Http::fake(fn () => throw new RuntimeException('OpenClaw unavailable'));
+    $mockClient = Mockery::mock(GitHubModelsClient::class);
+    $mockClient
+        ->shouldReceive('sendTranslationPayload')
+        ->once()
+        ->andThrow(new RuntimeException('GitHub Models unavailable'));
+
+    app()->instance(GitHubModelsClient::class, $mockClient);
 
     $response = $this->postJson('/api/demo/translate/sync', [
         'input_type' => 'plain_text',
@@ -97,17 +108,17 @@ it('returns a stable json error when the upstream translation call fails', funct
 
     $this->assertDatabaseHas('ai_invocations', [
         'job_id' => $job->id,
-        'agent_name' => 'chemical-news-translator',
+        'agent_name' => 'openai/gpt-5-mini',
         'status' => 'failed',
     ]);
 });
 
 it('records sync job timing around the upstream translation call', function () {
-    config()->set('services.openclaw', [
-        'base_url' => 'https://openclaw.example.test',
-        'api_key' => 'test-api-key',
-        'translation_agent' => 'chemical-news-translator',
-        'timeout' => 30,
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
     ]);
 
     $startedAt = Carbon::parse('2026-04-14 10:00:00');
@@ -115,11 +126,14 @@ it('records sync job timing around the upstream translation call', function () {
 
     Carbon::setTestNow($startedAt);
 
-    Http::fake([
-        '*' => function () use ($finishedAt) {
+    $mockClient = Mockery::mock(GitHubModelsClient::class);
+    $mockClient
+        ->shouldReceive('sendTranslationPayload')
+        ->once()
+        ->andReturnUsing(function () use ($finishedAt) {
             Carbon::setTestNow($finishedAt);
 
-            return Http::response([
+            return [
                 'translated_document' => [
                     'text' => 'Recorded with real timing.',
                 ],
@@ -129,9 +143,10 @@ it('records sync job timing around the upstream translation call', function () {
                 'meta' => [
                     'schema_version' => 'v1',
                 ],
-            ], 200);
-        },
-    ]);
+            ];
+        });
+
+    app()->instance(GitHubModelsClient::class, $mockClient);
 
     try {
         $this->postJson('/api/demo/translate/sync', [
@@ -153,11 +168,11 @@ it('records sync job timing around the upstream translation call', function () {
 });
 
 it('rejects translated content that still contains chinese when target language is english', function () {
-    config()->set('services.openclaw', [
-        'base_url' => 'https://openclaw.example.test',
-        'api_key' => 'test-api-key',
-        'translation_agent' => 'chemical-news-translator',
-        'timeout' => 30,
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
     ]);
 
     Http::fake([
@@ -170,6 +185,7 @@ it('rejects translated content that still contains chinese when target language 
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
+                'provider_model' => 'openai/gpt-5-mini',
             ],
         ], 200),
     ]);

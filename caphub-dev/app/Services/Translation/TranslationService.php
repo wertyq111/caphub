@@ -2,6 +2,7 @@
 
 namespace App\Services\Translation;
 
+use App\Enums\TranslationProvider;
 use App\Enums\TranslationJobStatus;
 use App\Models\DemoAccessLog;
 use App\Models\TranslationJob;
@@ -62,57 +63,61 @@ class TranslationService
      */
     public function translateSync(array $normalizedRequest): array
     {
-        $cacheKey = $this->syncCacheKey($normalizedRequest);
-        $lockSeconds = $this->syncCacheLockSeconds();
-        $waitSeconds = $this->syncCacheLockWaitSeconds();
-        $cacheContext = $this->syncCacheContext($normalizedRequest, $cacheKey);
+        $provider = $this->providerForSyncRequest($normalizedRequest);
 
-        return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest, $cacheContext) {
-            $cachedResponse = Cache::get($cacheKey);
+        return $this->gateway->usingProvider($provider, function () use ($normalizedRequest) {
+            $cacheKey = $this->syncCacheKey($normalizedRequest);
+            $lockSeconds = $this->syncCacheLockSeconds();
+            $waitSeconds = $this->syncCacheLockWaitSeconds();
+            $cacheContext = $this->syncCacheContext($normalizedRequest, $cacheKey);
 
-            if (is_array($cachedResponse)) {
-                Log::info('sync_translation_cache_hit', $cacheContext);
-                $this->recordDemoAccess('sync_translation_cache_hit');
+            return Cache::lock($cacheKey.':lock', $lockSeconds)->block($waitSeconds, function () use ($cacheKey, $normalizedRequest, $cacheContext) {
+                $cachedResponse = Cache::get($cacheKey);
 
-                return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($cachedResponse, true));
-            }
+                if (is_array($cachedResponse)) {
+                    Log::info('sync_translation_cache_hit', $cacheContext);
+                    $this->recordDemoAccess('sync_translation_cache_hit');
 
-            Log::info('sync_translation_cache_miss', $cacheContext);
-            $startedAt = now();
-            $job = $this->createSyncJob($normalizedRequest, $startedAt);
+                    return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($cachedResponse, true));
+                }
 
-            try {
-                $response = $this->gateway->translatePayload(
-                    (array) $normalizedRequest['openclaw_payload'],
-                    $job->id,
-                );
-                $finishedAt = now();
+                Log::info('sync_translation_cache_miss', $cacheContext);
+                $startedAt = now();
+                $job = $this->createSyncJob($normalizedRequest, $startedAt);
 
-                $result = DB::transaction(function () use ($normalizedRequest, $response, $job, $finishedAt) {
-                    $this->resultPersister->persist($job, $response, false);
-                    $this->glossaryHitPersister->persistForJob(
-                        $job,
-                        (array) ($response['glossary_hits'] ?? []),
-                        $normalizedRequest['domain'] ?? null,
+                try {
+                    $response = $this->gateway->translatePayload(
+                        (array) $normalizedRequest['openclaw_payload'],
+                        $job->id,
                     );
-                    $this->translationJobService->markSucceeded($job, $finishedAt);
-                    $this->recordDemoAccess('sync_translation_cache_miss', $job->id);
+                    $finishedAt = now();
 
-                    return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($response, false));
-                });
+                    $result = DB::transaction(function () use ($normalizedRequest, $response, $job, $finishedAt) {
+                        $this->resultPersister->persist($job, $response, false);
+                        $this->glossaryHitPersister->persistForJob(
+                            $job,
+                            (array) ($response['glossary_hits'] ?? []),
+                            $normalizedRequest['domain'] ?? null,
+                        );
+                        $this->translationJobService->markSucceeded($job, $finishedAt);
+                        $this->recordDemoAccess('sync_translation_cache_miss', $job->id);
 
-                $stored = Cache::put($cacheKey, $response, now()->addHour());
-                Log::info('sync_translation_cache_store', array_merge($cacheContext, [
-                    'stored' => $stored,
-                    'job_id' => $job->id,
-                ]));
+                        return $this->syncResultForResponse($normalizedRequest, $this->decorateResponse($response, false));
+                    });
 
-                return $result;
-            } catch (Throwable $throwable) {
-                $this->translationJobService->markFailed($job, $throwable->getMessage(), now());
+                    $stored = Cache::put($cacheKey, $response, now()->addHour());
+                    Log::info('sync_translation_cache_store', array_merge($cacheContext, [
+                        'stored' => $stored,
+                        'job_id' => $job->id,
+                    ]));
 
-                throw $throwable;
-            }
+                    return $result;
+                } catch (Throwable $throwable) {
+                    $this->translationJobService->markFailed($job, $throwable->getMessage(), now());
+
+                    throw $throwable;
+                }
+            });
         });
     }
 
@@ -159,42 +164,91 @@ class TranslationService
             'body' => $job->source_body,
         ], static fn ($value): bool => $value !== null && $value !== '');
 
-        if ($this->shouldTranslateAsyncHtmlPlainText($job, $inputDocument)) {
+        $provider = $this->providerForAsyncJob($job, $inputDocument);
+
+        return $this->gateway->usingProvider($provider, function () use ($job, $inputDocument) {
+            if ($this->shouldTranslateAsyncHtmlPlainText($job, $inputDocument)) {
+                return [
+                    'mode' => 'async',
+                    'input_type' => $job->input_type,
+                    'response' => $this->translateAsyncHtmlPlainText($job, (string) $inputDocument['text']),
+                ];
+            }
+
+            if ($this->shouldChunkAsyncPlainText($job, $inputDocument)) {
+                return [
+                    'mode' => 'async',
+                    'input_type' => $job->input_type,
+                    'response' => $this->translateChunkedAsyncPlainText($job, (string) $inputDocument['text']),
+                ];
+            }
+
+            $htmlDocumentFields = $this->asyncHtmlDocumentFields($job, $inputDocument);
+            if ($htmlDocumentFields !== []) {
+                return [
+                    'mode' => 'async',
+                    'input_type' => $job->input_type,
+                    'response' => $this->translateAsyncDocumentWithHtmlFields($job, $inputDocument, $htmlDocumentFields),
+                ];
+            }
+
+            $response = $this->gateway->translate([
+                ...$inputDocument,
+                'source_lang' => $job->source_lang,
+                'target_lang' => $job->target_lang,
+            ], jobId: $job->id);
+
             return [
                 'mode' => 'async',
                 'input_type' => $job->input_type,
-                'response' => $this->translateAsyncHtmlPlainText($job, (string) $inputDocument['text']),
+                'response' => $response,
             ];
+        });
+    }
+
+    /**
+     * 同步接口只把真正的短纯文本固定到 GitHub Models，其余仍按后台长文本接口走。
+     *
+     * @param  array<string, mixed>  $normalizedRequest
+     */
+    protected function providerForSyncRequest(array $normalizedRequest): TranslationProvider
+    {
+        $text = data_get($normalizedRequest, 'input_document.text');
+
+        if (is_string($text) && $this->isShortPlainTextForGitHub($normalizedRequest['input_type'] ?? null, $text)) {
+            return TranslationProvider::GitHubModels;
         }
 
-        if ($this->shouldChunkAsyncPlainText($job, $inputDocument)) {
-            return [
-                'mode' => 'async',
-                'input_type' => $job->input_type,
-                'response' => $this->translateChunkedAsyncPlainText($job, (string) $inputDocument['text']),
-            ];
+        return $this->gateway->activeProvider();
+    }
+
+    /**
+     * 异步任务里，只有短纯文本固定走 GitHub Models；长文本、HTML、article payload 都走后台选择的长文本接口。
+     *
+     * @param  array<string, string>  $inputDocument
+     */
+    protected function providerForAsyncJob(TranslationJob $job, array $inputDocument): TranslationProvider
+    {
+        $text = $inputDocument['text'] ?? null;
+
+        if (is_string($text) && $this->isShortPlainTextForGitHub($job->input_type, $text)) {
+            return TranslationProvider::GitHubModels;
         }
 
-        $htmlDocumentFields = $this->asyncHtmlDocumentFields($job, $inputDocument);
-        if ($htmlDocumentFields !== []) {
-            return [
-                'mode' => 'async',
-                'input_type' => $job->input_type,
-                'response' => $this->translateAsyncDocumentWithHtmlFields($job, $inputDocument, $htmlDocumentFields),
-            ];
+        return $this->gateway->activeProvider();
+    }
+
+    protected function isShortPlainTextForGitHub(mixed $inputType, string $text): bool
+    {
+        if ($inputType !== 'plain_text') {
+            return false;
         }
 
-        $response = $this->gateway->translate([
-            ...$inputDocument,
-            'source_lang' => $job->source_lang,
-            'target_lang' => $job->target_lang,
-        ], jobId: $job->id);
+        if ($this->htmlTextNodeTranslator->looksLikeHtml($text)) {
+            return false;
+        }
 
-        return [
-            'mode' => 'async',
-            'input_type' => $job->input_type,
-            'response' => $response,
-        ];
+        return mb_strlen($text) <= self::ASYNC_TEXT_CHUNK_THRESHOLD;
     }
 
     /**

@@ -21,11 +21,24 @@ class TranslationProviderSettings
                 ->value('value') ?? TranslationProvider::OpenClaw->value);
         });
 
-        return TranslationProvider::tryFrom($value) ?? TranslationProvider::OpenClaw;
+        $provider = TranslationProvider::tryFrom($value);
+
+        if ($provider instanceof TranslationProvider && $this->isManualSelectable($provider)) {
+            return $provider;
+        }
+
+        return $this->defaultManualProvider();
     }
 
     public function setCurrent(TranslationProvider $provider): TranslationProvider
     {
+        if (! $this->isManualSelectable($provider)) {
+            throw new RuntimeException(sprintf(
+                'Translation provider [%s] is not available for async long text jobs.',
+                $provider->value,
+            ));
+        }
+
         if (! $this->isConfigured($provider)) {
             throw new RuntimeException(sprintf(
                 'Translation provider [%s] is not configured.',
@@ -53,7 +66,7 @@ class TranslationProviderSettings
                 'key' => $provider->value,
                 'configured' => $this->isConfigured($provider),
             ];
-        }, TranslationProvider::cases());
+        }, TranslationProvider::manualCases());
     }
 
     public function isConfigured(TranslationProvider $provider): bool
@@ -85,5 +98,21 @@ class TranslationProviderSettings
         return trim((string) config('services.github_models.base_url', '')) !== ''
             && trim((string) config('services.github_models.api_key', '')) !== ''
             && trim((string) config('services.github_models.model', '')) !== '';
+    }
+
+    protected function isManualSelectable(TranslationProvider $provider): bool
+    {
+        return in_array($provider, TranslationProvider::manualCases(), true);
+    }
+
+    protected function defaultManualProvider(): TranslationProvider
+    {
+        foreach (TranslationProvider::manualCases() as $provider) {
+            if ($this->isConfigured($provider)) {
+                return $provider;
+            }
+        }
+
+        return TranslationProvider::OpenClaw;
     }
 }

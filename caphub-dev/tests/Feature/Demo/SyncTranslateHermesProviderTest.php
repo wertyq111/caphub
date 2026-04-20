@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Cache;
 
 uses(RefreshDatabase::class);
 
-it('uses the hermes provider for sync translation when the admin setting selects hermes', function () {
+it('uses the hermes provider for sync long plain text when the admin setting selects hermes', function () {
     Cache::flush();
 
     config()->set('services.hermes', [
@@ -29,7 +29,7 @@ it('uses the hermes provider for sync translation when the admin setting selects
         ->once()
         ->withArgs(function (array $payload, bool $enforceTargetLanguage, bool $allowPartialTranslatedDocument): bool {
             return $payload['task_type'] === 'translation'
-                && data_get($payload, 'input_document.text') === '乙烯价格上涨。'
+                && mb_strlen((string) data_get($payload, 'input_document.text')) > 1800
                 && $enforceTargetLanguage === true
                 && $allowPartialTranslatedDocument === false;
         })
@@ -53,7 +53,7 @@ it('uses the hermes provider for sync translation when the admin setting selects
         'source_lang' => 'zh',
         'target_lang' => 'en',
         'content' => [
-            'text' => '乙烯价格上涨。',
+            'text' => str_repeat('乙烯价格上涨。', 400),
         ],
     ]);
 
@@ -64,6 +64,6 @@ it('uses the hermes provider for sync translation when the admin setting selects
 
     $this->assertDatabaseHas('ai_invocations', [
         'agent_name' => 'chemical-news-translator',
-        'status' => 'success',
+        'status' => 'succeeded',
     ]);
 });

@@ -1,23 +1,23 @@
 <?php
 
+use App\Clients\Ai\GitHubModels\GitHubModelsClient;
 use App\Enums\TranslationProvider;
 use App\Models\Glossary;
 use App\Models\TranslationJob;
 use App\Services\Translation\TranslationProviderSettings;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
 
 it('caches identical sync translation requests and persists the first response', function () {
     Cache::flush();
 
-    config()->set('services.openclaw', [
-        'base_url' => 'https://openclaw.example.test',
-        'api_key' => 'test-api-key',
-        'translation_agent' => 'chemical-news-translator',
-        'timeout' => 30,
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
     ]);
 
     $glossary = Glossary::query()->create([
@@ -31,8 +31,11 @@ it('caches identical sync translation requests and persists the first response',
         'notes' => null,
     ]);
 
-    Http::fake([
-        '*' => Http::response([
+    $mockClient = Mockery::mock(GitHubModelsClient::class);
+    $mockClient
+        ->shouldReceive('sendTranslationPayload')
+        ->once()
+        ->andReturn([
             'translated_document' => [
                 'text' => 'Ethylene prices rose.',
             ],
@@ -47,8 +50,9 @@ it('caches identical sync translation requests and persists the first response',
             'meta' => [
                 'schema_version' => 'v1',
             ],
-        ], 200),
-    ]);
+        ]);
+
+    app()->instance(GitHubModelsClient::class, $mockClient);
 
     $payload = [
         'input_type' => 'plain_text',
@@ -74,8 +78,6 @@ it('caches identical sync translation requests and persists the first response',
         ->assertJsonPath('glossary_hits.0.source_term', '乙烯')
         ->assertJsonPath('meta.cache_hit', true);
 
-    Http::assertSentCount(1);
-
     expect(TranslationJob::query()->count())->toBe(1);
 
     $job = TranslationJob::query()->firstOrFail();
@@ -92,15 +94,8 @@ it('caches identical sync translation requests and persists the first response',
     ]);
 });
 
-it('separates sync cache entries between openclaw and hermes providers', function () {
+it('reuses the same sync cache entry for short text even after switching the long-text provider', function () {
     Cache::flush();
-
-    config()->set('services.openclaw', [
-        'base_url' => 'https://openclaw.example.test',
-        'api_key' => 'test-api-key',
-        'translation_agent' => 'chemical-news-translator',
-        'timeout' => 30,
-    ]);
 
     config()->set('services.hermes', [
         'base_url' => 'http://127.0.0.1:8643/v1',
@@ -110,37 +105,31 @@ it('separates sync cache entries between openclaw and hermes providers', functio
         'timeout' => 120,
     ]);
 
-    Http::fake([
-        'https://openclaw.example.test/*' => Http::response([
+    config()->set('services.github_models', [
+        'base_url' => 'https://models.github.ai/inference',
+        'api_key' => 'github-models-test-key',
+        'model' => 'openai/gpt-5-mini',
+        'timeout' => 45,
+    ]);
+
+    $mockClient = Mockery::mock(GitHubModelsClient::class);
+    $mockClient
+        ->shouldReceive('sendTranslationPayload')
+        ->once()
+        ->andReturn([
             'translated_document' => [
-                'text' => 'OpenClaw translation.',
+                'text' => 'GitHub Models translation.',
             ],
             'glossary_hits' => [],
             'risk_flags' => [],
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
+                'provider_model' => 'openai/gpt-5-mini',
             ],
-        ], 200),
-        'http://127.0.0.1:8643/v1/*' => Http::response([
-            'choices' => [[
-                'message' => [
-                    'content' => json_encode([
-                        'translated_document' => [
-                            'text' => 'Hermes translation.',
-                        ],
-                        'glossary_hits' => [],
-                        'risk_flags' => [],
-                        'notes' => [],
-                        'meta' => [
-                            'schema_version' => 'v1',
-                            'provider_model' => 'gpt-5-mini',
-                        ],
-                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                ],
-            ]],
-        ], 200),
-    ]);
+        ]);
+
+    app()->instance(GitHubModelsClient::class, $mockClient);
 
     $payload = [
         'input_type' => 'plain_text',
@@ -155,7 +144,7 @@ it('separates sync cache entries between openclaw and hermes providers', functio
 
     $openClawResponse
         ->assertOk()
-        ->assertJsonPath('translated_document.text', 'OpenClaw translation.')
+        ->assertJsonPath('translated_document.text', 'GitHub Models translation.')
         ->assertJsonPath('meta.cache_hit', false);
 
     app(TranslationProviderSettings::class)->setCurrent(TranslationProvider::Hermes);
@@ -164,9 +153,8 @@ it('separates sync cache entries between openclaw and hermes providers', functio
 
     $hermesResponse
         ->assertOk()
-        ->assertJsonPath('translated_document.text', 'Hermes translation.')
-        ->assertJsonPath('meta.cache_hit', false)
-        ->assertJsonPath('meta.provider_model', 'gpt-5-mini');
+        ->assertJsonPath('translated_document.text', 'GitHub Models translation.')
+        ->assertJsonPath('meta.cache_hit', true)
+        ->assertJsonPath('meta.provider_model', 'openai/gpt-5-mini');
 
-    Http::assertSentCount(2);
 });

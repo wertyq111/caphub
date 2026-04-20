@@ -43,8 +43,7 @@ it('returns the current translation provider for authenticated admins', function
         ->assertJsonPath('providers.0.configured', true)
         ->assertJsonPath('providers.1.key', 'hermes')
         ->assertJsonPath('providers.1.configured', true)
-        ->assertJsonPath('providers.2.key', 'github_models')
-        ->assertJsonPath('providers.2.configured', true);
+        ->assertJsonCount(2, 'providers');
 });
 
 it('updates the active translation provider to hermes', function () {
@@ -64,6 +63,20 @@ it('updates the active translation provider to hermes', function () {
     ]);
 });
 
+it('normalizes a legacy github models selection back to openclaw for the long-text provider view', function () {
+    Sanctum::actingAs(User::factory()->create());
+
+    SystemSetting::query()->create([
+        'key' => 'translation.active_provider',
+        'value' => 'github_models',
+    ]);
+
+    $this->getJson('/api/admin/system/translation-provider')
+        ->assertOk()
+        ->assertJsonPath('provider', 'openclaw')
+        ->assertJsonCount(2, 'providers');
+});
+
 it('rejects switching to an unconfigured translation provider', function () {
     Sanctum::actingAs(User::factory()->create());
 
@@ -80,7 +93,7 @@ it('rejects switching to an unconfigured translation provider', function () {
     expect(SystemSetting::query()->where('key', 'translation.active_provider')->exists())->toBeFalse();
 });
 
-it('updates the active translation provider to github models', function () {
+it('rejects switching the async long-text provider to github models', function () {
     Sanctum::actingAs(User::factory()->create());
 
     $response = $this->putJson('/api/admin/system/translation-provider', [
@@ -88,11 +101,8 @@ it('updates the active translation provider to github models', function () {
     ]);
 
     $response
-        ->assertOk()
-        ->assertJsonPath('provider', 'github_models');
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['provider']);
 
-    $this->assertDatabaseHas('system_settings', [
-        'key' => 'translation.active_provider',
-        'value' => 'github_models',
-    ]);
+    expect(SystemSetting::query()->where('key', 'translation.active_provider')->exists())->toBeFalse();
 });
