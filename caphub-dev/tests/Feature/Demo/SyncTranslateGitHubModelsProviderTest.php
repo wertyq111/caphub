@@ -63,6 +63,6 @@ it('uses the github models provider for sync translation when the admin setting 
 
     $this->assertDatabaseHas('ai_invocations', [
         'agent_name' => 'openai/gpt-5-mini',
-        'status' => 'success',
+        'status' => 'succeeded',
     ]);
 });
