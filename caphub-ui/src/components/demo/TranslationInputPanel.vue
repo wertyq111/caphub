@@ -176,7 +176,7 @@ function translatedDocument() {
         </div>
         <div class="flex items-center gap-2 rounded-[var(--np-radius-md)] np-glass px-3 py-2 text-xs text-[var(--np-secondary)]">
           <span class="np-dot-pulse h-2 w-2 rounded-full bg-[var(--np-success)] text-[var(--np-success)]" />
-          <span>当前智能体：{{ activeAgent || '检测中...' }}</span>
+          <span>当前路由：{{ activeAgent || '检测中...' }}</span>
         </div>
       </div>
 

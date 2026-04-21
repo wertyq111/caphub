@@ -1,24 +1,28 @@
 <script setup>
-import { ref, onMounted } from 'vue';
-import { RouterLink } from 'vue-router';
+import { computed, ref, onMounted } from 'vue';
+import { RouterLink, useRouter } from 'vue-router';
 import TranslationInputPanel from '../../components/demo/TranslationInputPanel.vue';
 import CapabilitySidebar from '../../components/public/CapabilitySidebar.vue';
 import AppErrorState from '../../components/shared/AppErrorState.vue';
-import { submitSyncTranslation } from '../../api/translation';
+import { submitAsyncTranslation, submitSyncTranslation } from '../../api/translation';
 import { fetchDashboardStats } from '../../api/dashboard';
 
+const PLAIN_TEXT_SYNC_THRESHOLD = 1800;
+
+const router = useRouter();
 const errorMessage = ref('');
 const loading = ref(false);
 const translationResult = ref(null);
-const activeAgent = ref('');
+const activeLongTextAgent = ref('');
+const latestJobUuid = ref('');
 
 onMounted(async () => {
   try {
     const data = await fetchDashboardStats();
-    const active = data.agents?.find(a => a.active);
-    activeAgent.value = active?.name ?? '';
+    const active = data.agents?.find(a => a.active && a.key !== 'github_models');
+    activeLongTextAgent.value = active?.name ?? '';
   } catch {
-    activeAgent.value = '';
+    activeLongTextAgent.value = '';
   }
 });
 
@@ -29,31 +33,59 @@ const sidebarSections = [
     description: '页面右侧会把系统能力直接展示出来，帮助用户理解这不是一次性的 prompt 页面，而是一套可扩展的 AI 工作流入口。',
     items: [
       '术语命中、风险标记与 notes 继续通过结果页承接',
-      '同步翻译结果会在当前页面即时呈现',
+      '短文本同步直出，长文本自动转任务追踪页',
       '后台侧已有术语表、任务历史与 AI 日志能力',
     ],
   },
   {
     eyebrow: 'Usage Notes',
     title: '输入建议',
-    description: '短消息、单段快讯更适合 Plain Text；结构化资讯则可切换到 Article Payload 模式，分别输入标题、摘要与正文。',
+    description: '纯文本 1800 字以内会直接走 Copilot；超过阈值或 JSON 文本会切到当前长文本接口并创建任务。',
     items: [
       '语言代码建议保持与后端既有规则一致',
-      '提交后会在当前页直接显示完整结果',
-      '长文本内容建议按语义分段输入，便于人工复核',
+      '短文本提交后会在当前页直接显示结果',
+      '长文本提交后会自动进入任务跟踪页',
     ],
   },
 ];
+
+const activeAgent = computed(() => {
+  const longTextAgent = activeLongTextAgent.value || '当前长文本接口';
+  return `短文本 Copilot(gpt-4o) · 长文本 ${longTextAgent}`;
+});
 
 function handleModeChange(mode) {
   return mode;
 }
 
+function shouldUseAsyncRoute(payload) {
+  if (payload.input_type !== 'plain_text') {
+    return true;
+  }
+
+  const text = payload.content?.text;
+
+  return typeof text === 'string' && text.length > PLAIN_TEXT_SYNC_THRESHOLD;
+}
+
 async function handleSubmit(payload) {
   errorMessage.value = '';
   translationResult.value = null;
+  latestJobUuid.value = '';
   loading.value = true;
+
   try {
+    if (shouldUseAsyncRoute(payload)) {
+      const data = await submitAsyncTranslation(payload);
+      latestJobUuid.value = data.job_uuid ?? '';
+
+      if (latestJobUuid.value) {
+        await router.push(`/demo/jobs/${latestJobUuid.value}`);
+      }
+
+      return;
+    }
+
     const data = await submitSyncTranslation(payload);
     translationResult.value = data;
   } catch (error) {
@@ -61,6 +93,14 @@ async function handleSubmit(payload) {
   } finally {
     loading.value = false;
   }
+}
+
+function openLatestJob() {
+  if (!latestJobUuid.value) {
+    return;
+  }
+
+  router.push(`/demo/jobs/${latestJobUuid.value}`);
 }
 </script>
 
@@ -71,7 +111,7 @@ async function handleSubmit(payload) {
       <div class="flex items-center gap-3">
         <span class="np-dot-pulse h-2 w-2 rounded-full bg-[var(--np-success)] text-[var(--np-success)]" />
         <span class="np-font-mono text-xs font-medium uppercase tracking-[0.2em] text-[var(--np-primary)]" style="opacity: 0.7;">Translation Workbench</span>
-        <span class="text-xs text-[var(--np-on-surface-variant)]">chemical-news-translator · Sync-first</span>
+        <span class="text-xs text-[var(--np-on-surface-variant)]">短文本 Copilot · 长文本当前接口</span>
       </div>
       <RouterLink to="/" class="text-xs text-[var(--np-on-surface-variant)] no-underline transition hover:text-[var(--np-primary)]">← 返回首页</RouterLink>
     </div>
@@ -97,7 +137,11 @@ async function handleSubmit(payload) {
         <AppErrorState v-if="errorMessage" :message="errorMessage" />
       </section>
 
-      <CapabilitySidebar :sections="sidebarSections" />
+      <CapabilitySidebar
+        :sections="sidebarSections"
+        :job-uuid="latestJobUuid"
+        @open-job="openLatestJob"
+      />
     </div>
   </div>
 </template>

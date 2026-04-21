@@ -19,7 +19,7 @@ const emit = defineEmits(['open-job']);
       <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.3em] text-[var(--np-primary)]" style="opacity: 0.7;">Workbench Status</p>
       <h2 class="mt-3 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">公开演示：智能翻译工作台</h2>
       <p class="mt-2 text-sm leading-6 text-[var(--np-on-surface-variant)]">
-        使用化工资讯翻译 Agent 直接返回同步结果，并在当前页承接术语命中、风险标记与输出复核。
+        短文本会直接走 Copilot 同步返回；长文本和 JSON 文本会切到当前长文本接口并创建任务。
       </p>
 
       <div

@@ -7,8 +7,9 @@ const props = defineProps({
   loading: { type: Boolean, default: false },
 });
 
-const onlineCount = computed(() => props.agents.filter(a => a.configured).length);
-const totalCount = computed(() => props.agents.length);
+const visibleAgents = computed(() => props.agents.filter(agent => agent.key !== 'github_models'));
+const onlineCount = computed(() => visibleAgents.value.filter(a => a.configured).length);
+const totalCount = computed(() => visibleAgents.value.length);
 
 function getAccent(agent) {
   if (agent.key === 'hermes') return 'secondary';
@@ -46,7 +47,7 @@ function getTypeLabel(agent) {
 
     <div v-else class="space-y-3">
       <article
-        v-for="agent in agents"
+        v-for="agent in visibleAgents"
         :key="agent.key"
         class="np-ghost-border np-card-hover rounded-[var(--np-radius-xl)] np-glass-strong p-4"
       >
