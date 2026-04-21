@@ -5,46 +5,38 @@ use App\Clients\Ai\GitHubModels\GitHubModelsTranslationGateway;
 use App\Clients\Ai\OpenClaw\AiInvocationLogger;
 use App\Clients\Ai\OpenClaw\TranslationAgentPayloadBuilder;
 use App\Models\AiInvocation;
+use Illuminate\Support\Facades\Http;
 
-it('dispatches github models requests through the copilot cli command', function () {
+it('dispatches github models requests through the copilot bridge', function () {
     config()->set('services.github_models', [
+        'base_url' => 'http://host.docker.internal:18643',
+        'api_key' => 'bridge-test-key',
         'model' => 'openai/gpt-5-mini',
-        'copilot_bin' => '/usr/bin/copilot',
-        'copilot_excluded_tools' => 'shell,write,read,url,memory',
         'timeout' => 45,
+        'retry_times' => 2,
     ]);
 
-    $client = Mockery::mock(GitHubModelsClient::class)->makePartial()->shouldAllowMockingProtectedMethods();
-    $client->shouldReceive('runCopilotCommand')
-        ->once()
-        ->withArgs(function (array $command): bool {
-            expect($command[0])->toBe('/usr/bin/copilot');
-            expect($command)->toContain('--model');
-            expect($command)->toContain('gpt-5-mini');
-            expect($command)->toContain('-s');
-            expect($command)->toContain('--allow-all-tools');
-            expect($command)->toContain('--disable-builtin-mcps');
-            expect($command)->toContain('--excluded-tools=shell,write,read,url,memory');
+    Http::fake([
+        'http://host.docker.internal:18643/v1/completions' => Http::response([
+            'content' => json_encode([
+                'translated_document' => [
+                    'text' => 'Ethylene prices rose.',
+                ],
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openai/gpt-5-mini',
+                ],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'duration_ms' => 320,
+            'exit_code' => 0,
+            'model' => 'gpt-5-mini',
+        ], 200),
+    ]);
 
-            $promptIndex = array_search('-p', $command, true);
-            expect($promptIndex)->not->toBeFalse();
-            expect($command[$promptIndex + 1] ?? '')->toContain('"text":"乙烯价格上涨。"');
-            expect($command[$promptIndex + 1] ?? '')->toContain('"provider_model":"openai/gpt-5-mini"');
-
-            return true;
-        })
-        ->andReturn(json_encode([
-            'translated_document' => [
-                'text' => 'Ethylene prices rose.',
-            ],
-            'glossary_hits' => [],
-            'risk_flags' => [],
-            'notes' => [],
-            'meta' => [
-                'schema_version' => 'v1',
-                'provider_model' => 'openai/gpt-5-mini',
-            ],
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    $client = app(GitHubModelsClient::class);
 
     $response = $client->sendTranslationPayload([
         'task_type' => 'translation',
@@ -64,25 +56,39 @@ it('dispatches github models requests through the copilot cli command', function
         'output_schema_version' => 'v1',
     ]);
 
+    Http::assertSent(function (\Illuminate\Http\Client\Request $request): bool {
+        expect($request->url())->toBe('http://host.docker.internal:18643/v1/completions');
+        expect($request->header('Authorization'))->toContain('Bearer bridge-test-key');
+        expect($request['model'])->toBe('gpt-5-mini');
+        expect($request['timeout'])->toBe(45);
+        expect($request['prompt'])->toContain('"text":"乙烯价格上涨。"');
+        expect($request['prompt'])->toContain('"provider_model":"openai/gpt-5-mini"');
+
+        return true;
+    });
+
     expect(data_get($response, 'translated_document.text'))->toBe('Ethylene prices rose.');
     expect(data_get($response, 'meta.provider_model'))->toBe('openai/gpt-5-mini');
     expect(data_get($response, 'meta.retry_count'))->toBe(0);
+    expect(data_get($response, 'meta.bridge_duration_ms'))->toBe(320);
 });
 
-it('surfaces copilot cli failures for github models translation', function () {
+it('surfaces copilot bridge failures for github models translation', function () {
     config()->set('services.github_models', [
+        'base_url' => 'http://host.docker.internal:18643',
+        'api_key' => 'bridge-test-key',
         'model' => 'openai/gpt-5-mini',
-        'copilot_bin' => '/usr/bin/copilot',
-        'copilot_excluded_tools' => 'shell,write,read,url,memory',
         'timeout' => 45,
+        'retry_times' => 0,
     ]);
 
-    $client = Mockery::mock(GitHubModelsClient::class)->makePartial()->shouldAllowMockingProtectedMethods();
-    $client->shouldReceive('runCopilotCommand')
-        ->once()
-        ->andThrow(new RuntimeException('Authentication failed.'));
+    Http::fake([
+        'http://host.docker.internal:18643/v1/completions' => Http::response([
+            'message' => 'Authentication failed.',
+        ], 502),
+    ]);
 
-    expect(fn () => $client->sendTranslationPayload([
+    expect(fn () => app(GitHubModelsClient::class)->sendTranslationPayload([
         'task_type' => 'translation',
         'task_subtype' => 'chemical_news',
         'input_document' => [
@@ -101,19 +107,18 @@ it('surfaces copilot cli failures for github models translation', function () {
     ]))->toThrow(RuntimeException::class, 'Authentication failed.');
 });
 
-it('serializes github models concurrent translation through repeated copilot cli calls', function () {
+it('serializes github models concurrent translation through repeated copilot bridge calls', function () {
     config()->set('services.github_models', [
+        'base_url' => 'http://host.docker.internal:18643',
+        'api_key' => 'bridge-test-key',
         'model' => 'openai/gpt-5-mini',
-        'copilot_bin' => '/usr/bin/copilot',
-        'copilot_excluded_tools' => 'shell,write,read,url,memory',
         'timeout' => 45,
+        'retry_times' => 0,
     ]);
 
-    $client = Mockery::mock(GitHubModelsClient::class)->makePartial()->shouldAllowMockingProtectedMethods();
-    $client->shouldReceive('runCopilotCommand')
-        ->twice()
-        ->andReturn(
-            json_encode([
+    Http::fakeSequence()
+        ->push([
+            'content' => json_encode([
                 'translated_document' => [
                     'segment_0' => 'First segment',
                 ],
@@ -125,7 +130,12 @@ it('serializes github models concurrent translation through repeated copilot cli
                     'provider_model' => 'openai/gpt-5-mini',
                 ],
             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            json_encode([
+            'duration_ms' => 210,
+            'exit_code' => 0,
+            'model' => 'gpt-5-mini',
+        ], 200)
+        ->push([
+            'content' => json_encode([
                 'translated_document' => [
                     'segment_1' => 'Second segment',
                 ],
@@ -137,9 +147,12 @@ it('serializes github models concurrent translation through repeated copilot cli
                     'provider_model' => 'openai/gpt-5-mini',
                 ],
             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-        );
+            'duration_ms' => 220,
+            'exit_code' => 0,
+            'model' => 'gpt-5-mini',
+        ], 200);
 
-    $results = $client->sendTranslationPayloadsConcurrently([
+    $results = app(GitHubModelsClient::class)->sendTranslationPayloadsConcurrently([
         [
             'payload' => [
                 'task_type' => 'translation',
@@ -184,6 +197,7 @@ it('serializes github models concurrent translation through repeated copilot cli
     expect(data_get($results, '1.response.translated_document.segment_1'))->toBe('Second segment');
     expect(data_get($results, '0.response.meta.retry_count'))->toBe(0);
     expect(data_get($results, '1.response.meta.retry_count'))->toBe(0);
+    Http::assertSentCount(2);
 });
 
 it('routes github models concurrent translation through the batch client instead of serial single calls', function () {
@@ -275,10 +289,8 @@ it('routes github models concurrent translation through the batch client instead
                 'output_schema_version' => 'v1',
             ],
         ],
-    ], 2, false, true);
+    ], 2);
 
     expect(data_get($results, '0.response.translated_document.segment_0'))->toBe('First segment');
     expect(data_get($results, '1.response.translated_document.segment_1'))->toBe('Second segment');
-    expect(data_get($results, '0.response.meta.provider_dispatch_mode'))->toBe('bounded_concurrent');
-    expect(data_get($results, '1.response.meta.provider_dispatch_mode'))->toBe('bounded_concurrent');
 });

@@ -3,6 +3,7 @@
 use App\Clients\Ai\GitHubModels\GitHubModelsClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
 
@@ -168,30 +169,31 @@ it('records sync job timing around the upstream translation call', function () {
 
 it('rejects translated content that still contains chinese when target language is english', function () {
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
+        'base_url' => 'http://host.docker.internal:18643',
+        'api_key' => 'bridge-test-key',
         'model' => 'openai/gpt-5-mini',
         'timeout' => 45,
     ]);
 
-    $mockClient = Mockery::mock(GitHubModelsClient::class)->makePartial()->shouldAllowMockingProtectedMethods();
-    $mockClient
-        ->shouldReceive('runCopilotCommand')
-        ->once()
-        ->andReturn(json_encode([
-            'translated_document' => [
-                'text' => 'Ethylene prices 价格 rose.',
-            ],
-            'glossary_hits' => [],
-            'risk_flags' => [],
-            'notes' => [],
-            'meta' => [
-                'schema_version' => 'v1',
-                'provider_model' => 'openai/gpt-5-mini',
-            ],
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-
-    app()->instance(GitHubModelsClient::class, $mockClient);
+    Http::fake([
+        'http://host.docker.internal:18643/v1/completions' => Http::response([
+            'content' => json_encode([
+                'translated_document' => [
+                    'text' => 'Ethylene prices 价格 rose.',
+                ],
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openai/gpt-5-mini',
+                ],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'duration_ms' => 250,
+            'exit_code' => 0,
+            'model' => 'gpt-5-mini',
+        ], 200),
+    ]);
 
     $response = $this->postJson('/api/demo/translate/sync', [
         'input_type' => 'plain_text',

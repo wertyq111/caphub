@@ -2,13 +2,19 @@
 
 namespace App\Clients\Ai\GitHubModels;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\RequestException;
+use Illuminate\Http\Client\Response;
+use Illuminate\Support\Facades\Http;
 use RuntimeException;
-use Symfony\Component\Process\Process;
 use Throwable;
 
 class GitHubModelsClient
 {
     protected const OUTPUT_SCHEMA_VERSION = 'v1';
+
+    protected const RETRYABLE_STATUS_CODES = [429, 502, 503, 504];
 
     /**
      * @param  array<string, mixed>  $payload
@@ -19,18 +25,44 @@ class GitHubModelsClient
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
-        $output = $this->runCopilotCommand(
-            $this->copilotCommand(
-                $this->translationPrompt($payload, $allowPartialTranslatedDocument),
-            ),
+        $requestPayload = $this->bridgeRequestPayload(
+            $this->translationPrompt($payload, $allowPartialTranslatedDocument),
         );
+        $attempt = 0;
+        $maxAttempts = $this->retryTimes() + 1;
+        $lastException = null;
 
-        return $this->withRetryCount($this->validateTranslationResponse(
-            $this->decodeJsonFromText($output),
-            $payload,
-            $enforceTargetLanguage,
-            $allowPartialTranslatedDocument,
-        ), 0);
+        while ($attempt < $maxAttempts) {
+            try {
+                $response = $this->request()
+                    ->post($this->completionPath(), $requestPayload)
+                    ->throw();
+
+                return $this->withRetryCount(
+                    $this->attachTransportMeta(
+                        $this->validateTranslationResponse(
+                            $this->decodeJsonFromText(
+                                $this->extractCompletionContent($response->json() ?? []),
+                            ),
+                            $payload,
+                            $enforceTargetLanguage,
+                            $allowPartialTranslatedDocument,
+                        ),
+                        $response,
+                    ),
+                    $attempt,
+                );
+            } catch (Throwable $throwable) {
+                $lastException = $this->normalizeException($throwable);
+                $attempt++;
+
+                if (! $this->shouldRetryAfter($throwable) || $attempt >= $maxAttempts) {
+                    throw $lastException;
+                }
+            }
+        }
+
+        throw $lastException ?? new RuntimeException('Copilot bridge translation request failed.');
     }
 
     /**
@@ -124,76 +156,62 @@ class GitHubModelsClient
     }
 
     /**
-     * @return array<int, string>
+     * @param  string  $prompt
+     * @return array<string, mixed>
      */
-    protected function copilotCommand(string $prompt): array
+    protected function bridgeRequestPayload(string $prompt): array
     {
         return [
-            $this->copilotBinary(),
-            '--model',
-            $this->copilotModel(),
-            '-p',
-            $prompt,
-            '-s',
-            '--allow-all-tools',
-            '--disable-builtin-mcps',
-            '--excluded-tools='.$this->excludedTools(),
+            'model' => $this->copilotModel(),
+            'prompt' => $prompt,
+            'timeout' => $this->timeout(),
         ];
     }
 
-    /**
-     * @param  array<int, string>  $command
-     */
-    protected function runCopilotCommand(array $command): string
+    protected function request(): PendingRequest
     {
-        $process = new Process($command);
-        $process->setTimeout($this->timeout());
-        $process->run();
-
-        if (! $process->isSuccessful()) {
-            $message = trim($process->getErrorOutput());
-
-            if ($message === '') {
-                $message = trim($process->getOutput());
-            }
-
-            throw new RuntimeException($message !== '' ? $message : 'Copilot CLI translation request failed.');
-        }
-
-        $output = trim($process->getOutput());
-
-        if ($output === '') {
-            throw new RuntimeException('Copilot CLI completion content is empty.');
-        }
-
-        return $output;
+        return Http::baseUrl($this->baseUrl())
+            ->acceptJson()
+            ->asJson()
+            ->timeout($this->timeout())
+            ->withToken($this->apiKey());
     }
 
-    protected function copilotBinary(): string
+    protected function completionPath(): string
     {
-        $binary = trim((string) config('services.github_models.copilot_bin', 'copilot'));
-
-        if ($binary === '') {
-            throw new RuntimeException('Copilot CLI binary is not configured.');
-        }
-
-        return $binary;
+        return '/v1/completions';
     }
 
-    protected function excludedTools(): string
+    protected function baseUrl(): string
     {
-        $tools = trim((string) config('services.github_models.copilot_excluded_tools', 'shell,write,read,url,memory'));
+        $baseUrl = trim((string) config('services.github_models.base_url', ''));
 
-        if ($tools === '') {
-            throw new RuntimeException('Copilot CLI excluded tools are not configured.');
+        if ($baseUrl === '') {
+            throw new RuntimeException('Copilot bridge base URL is not configured.');
         }
 
-        return $tools;
+        return rtrim($baseUrl, '/');
+    }
+
+    protected function apiKey(): string
+    {
+        $apiKey = trim((string) config('services.github_models.api_key', ''));
+
+        if ($apiKey === '') {
+            throw new RuntimeException('Copilot bridge API key is not configured.');
+        }
+
+        return $apiKey;
     }
 
     protected function timeout(): int
     {
         return max(1, (int) config('services.github_models.timeout', 45));
+    }
+
+    protected function retryTimes(): int
+    {
+        return max(0, (int) config('services.github_models.retry_times', 0));
     }
 
     protected function providerModel(): string
@@ -227,6 +245,86 @@ class GitHubModelsClient
         return $response;
     }
 
+    /**
+     * @param  array<string, mixed>  $response
+     * @return string
+     */
+    protected function extractCompletionContent(array $response): string
+    {
+        $content = data_get($response, 'content');
+
+        if (! is_string($content) || trim($content) === '') {
+            throw new RuntimeException('Copilot bridge completion content is empty.');
+        }
+
+        return $content;
+    }
+
+    /**
+     * @param  array<string, mixed>  $response
+     * @return array<string, mixed>
+     */
+    protected function attachTransportMeta(array $response, Response $httpResponse): array
+    {
+        $stats = $httpResponse->handlerStats();
+
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), array_filter([
+            'upstream_http_status' => $httpResponse->status(),
+            'upstream_connect_time_ms' => $this->handlerStatMillis($stats, 'connect_time'),
+            'upstream_starttransfer_time_ms' => $this->handlerStatMillis($stats, 'starttransfer_time'),
+            'upstream_total_time_ms' => $this->handlerStatMillis($stats, 'total_time'),
+            'bridge_duration_ms' => is_numeric(data_get($httpResponse->json() ?? [], 'duration_ms'))
+                ? (int) data_get($httpResponse->json() ?? [], 'duration_ms')
+                : null,
+        ], static fn (mixed $value): bool => $value !== null));
+
+        return $response;
+    }
+
+    /**
+     * @param  array<string, mixed>  $stats
+     */
+    protected function handlerStatMillis(array $stats, string $key): ?int
+    {
+        $value = $stats[$key] ?? null;
+
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return (int) round(((float) $value) * 1000);
+    }
+
+    protected function shouldRetryAfter(Throwable $throwable): bool
+    {
+        if ($throwable instanceof ConnectionException) {
+            return true;
+        }
+
+        if ($throwable instanceof RequestException) {
+            return in_array($throwable->response?->status(), self::RETRYABLE_STATUS_CODES, true);
+        }
+
+        return false;
+    }
+
+    protected function normalizeException(Throwable $throwable): RuntimeException
+    {
+        if ($throwable instanceof RequestException) {
+            $message = trim((string) data_get($throwable->response?->json() ?? [], 'message', ''));
+
+            if ($message !== '') {
+                return new RuntimeException($message, (int) ($throwable->response?->status() ?? 0), $throwable);
+            }
+        }
+
+        if ($throwable instanceof ConnectionException) {
+            return new RuntimeException('Copilot bridge connection failed: '.$throwable->getMessage(), 0, $throwable);
+        }
+
+        return $this->toRuntimeException($throwable);
+    }
+
     protected function toRuntimeException(Throwable $throwable): RuntimeException
     {
         if ($throwable instanceof RuntimeException) {
@@ -245,7 +343,7 @@ class GitHubModelsClient
         $trimmed = trim($text);
 
         if ($trimmed === '') {
-            throw new RuntimeException('Copilot CLI completion content is empty.');
+            throw new RuntimeException('Copilot bridge completion content is empty.');
         }
 
         if (str_starts_with($trimmed, '```')) {
@@ -275,7 +373,7 @@ class GitHubModelsClient
         }
 
         if (! is_array($decoded)) {
-            throw new RuntimeException('Copilot CLI completion content is not valid JSON.');
+            throw new RuntimeException('Copilot bridge completion content is not valid JSON.');
         }
 
         return $decoded;
@@ -294,7 +392,7 @@ class GitHubModelsClient
     ): array {
         foreach (['translated_document', 'glossary_hits', 'risk_flags', 'notes', 'meta'] as $key) {
             if (! array_key_exists($key, $response)) {
-                throw new RuntimeException(sprintf('Copilot CLI response payload is missing required key [%s].', $key));
+                throw new RuntimeException(sprintf('Copilot bridge response payload is missing required key [%s].', $key));
             }
         }
 
@@ -303,11 +401,11 @@ class GitHubModelsClient
             || ! is_array($response['risk_flags'])
             || ! is_array($response['notes'])
             || ! is_array($response['meta'])) {
-            throw new RuntimeException('Copilot CLI response payload has an invalid schema.');
+            throw new RuntimeException('Copilot bridge response payload has an invalid schema.');
         }
 
         if (! array_key_exists('schema_version', $response['meta'])) {
-            throw new RuntimeException('Copilot CLI response meta is missing [schema_version].');
+            throw new RuntimeException('Copilot bridge response meta is missing [schema_version].');
         }
 
         foreach (array_keys((array) ($payload['input_document'] ?? [])) as $key) {
@@ -316,11 +414,11 @@ class GitHubModelsClient
                     continue;
                 }
 
-                throw new RuntimeException(sprintf('Copilot CLI translated_document is missing required key [%s].', $key));
+                throw new RuntimeException(sprintf('Copilot bridge translated_document is missing required key [%s].', $key));
             }
 
             if (! is_string($response['translated_document'][$key])) {
-                throw new RuntimeException(sprintf('Copilot CLI translated_document key [%s] must be a string.', $key));
+                throw new RuntimeException(sprintf('Copilot bridge translated_document key [%s] must be a string.', $key));
             }
         }
 
@@ -349,7 +447,7 @@ class GitHubModelsClient
             }
 
             throw new RuntimeException(sprintf(
-                'Copilot CLI translated_document key [%s] contains Chinese characters for English target output.',
+                'Copilot bridge translated_document key [%s] contains Chinese characters for English target output.',
                 $key,
             ));
         }
