@@ -1,6 +1,7 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
+import { submitAsyncTranslation } from '../../api/translation';
 import { useJobPolling } from '../../composables/useJobPolling';
 import JobTimeline from '../../components/demo/JobTimeline.vue';
 import AppLoader from '../../components/shared/AppLoader.vue';
@@ -12,6 +13,10 @@ const router = useRouter();
 const jobId = computed(() => String(route.params.jobId ?? ''));
 const pollingEnabled = computed(() => jobId.value.length > 0);
 const jobQuery = useJobPolling(jobId, pollingEnabled);
+const retrying = ref(false);
+const retryError = ref('');
+const animatedTranslatedText = ref('');
+let typingTimer = null;
 
 const statusMeta = {
   pending: {
@@ -67,6 +72,7 @@ const statusInfo = computed(() => statusMeta[status.value] ?? {
 const isFinished = computed(() => ['succeeded', 'failed', 'cancelled'].includes(status.value));
 const isSucceeded = computed(() => status.value === 'succeeded');
 const isFailed = computed(() => status.value === 'failed');
+const showRunningIndicator = computed(() => !isFinished.value);
 const refreshHint = computed(() => (isFinished.value ? '自动刷新已停止' : '页面每 1.5 秒自动刷新一次'));
 const inputTypeLabel = computed(() => inputTypeLabelMap[jobQuery.data.value?.input_type] ?? '未知类型');
 const languageDirection = computed(() => {
@@ -95,9 +101,132 @@ function formatTimestamp(value) {
   }
 }
 
+function normalizeDocumentValue(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function flattenDocument(document, inputType) {
+  if (!document || typeof document !== 'object') {
+    return '';
+  }
+
+  if (inputType === 'plain_text') {
+    return normalizeDocumentValue(document.text);
+  }
+
+  const sections = [
+    ['标题', normalizeDocumentValue(document.title)],
+    ['摘要', normalizeDocumentValue(document.summary)],
+    ['正文', normalizeDocumentValue(document.body)],
+  ].filter(([, value]) => value !== '');
+
+  return sections.map(([label, value]) => `${label}\n${value}`).join('\n\n');
+}
+
+function clearTypingAnimation() {
+  if (typingTimer) {
+    window.clearInterval(typingTimer);
+    typingTimer = null;
+  }
+}
+
+function startTypingAnimation(text) {
+  clearTypingAnimation();
+
+  if (!text) {
+    animatedTranslatedText.value = '';
+    return;
+  }
+
+  animatedTranslatedText.value = '';
+
+  const totalLength = text.length;
+  const step = Math.max(1, Math.ceil(totalLength / 140));
+  let cursor = 0;
+
+  typingTimer = window.setInterval(() => {
+    cursor = Math.min(totalLength, cursor + step);
+    animatedTranslatedText.value = text.slice(0, cursor);
+
+    if (cursor >= totalLength) {
+      clearTypingAnimation();
+    }
+  }, 18);
+}
+
 const startedAtLabel = computed(() => formatTimestamp(jobQuery.data.value?.started_at));
 const finishedAtLabel = computed(() => formatTimestamp(jobQuery.data.value?.finished_at));
 const failureReason = computed(() => jobQuery.data.value?.error?.reason ?? '');
+const sourcePreview = computed(() => flattenDocument(
+  jobQuery.data.value?.source_document ?? {},
+  jobQuery.data.value?.input_type,
+));
+const translatedPreview = computed(() => flattenDocument(
+  jobQuery.data.value?.translated_document ?? {},
+  jobQuery.data.value?.input_type,
+));
+const translatedPreviewDisplay = computed(() => (
+  isSucceeded.value ? animatedTranslatedText.value : translatedPreview.value
+));
+
+watch(
+  () => [isSucceeded.value, translatedPreview.value],
+  ([succeeded, translatedText]) => {
+    if (!succeeded) {
+      clearTypingAnimation();
+      animatedTranslatedText.value = translatedText || '';
+      return;
+    }
+
+    startTypingAnimation(translatedText);
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => {
+  clearTypingAnimation();
+});
+
+function buildRetryPayload() {
+  const data = jobQuery.data.value ?? {};
+  const sourceDocument = data.source_document ?? {};
+
+  return {
+    input_type: data.input_type ?? 'plain_text',
+    document_type: data.document_type ?? 'chemical_news',
+    source_lang: data.source_lang ?? 'zh',
+    target_lang: data.target_lang ?? 'en',
+    content: data.input_type === 'plain_text'
+      ? {
+        text: sourceDocument.text ?? '',
+      }
+      : {
+        title: sourceDocument.title ?? '',
+        summary: sourceDocument.summary ?? '',
+        body: sourceDocument.body ?? '',
+      },
+  };
+}
+
+async function retryTranslation() {
+  retrying.value = true;
+  retryError.value = '';
+
+  try {
+    const data = await submitAsyncTranslation(buildRetryPayload());
+    const nextJobUuid = data.job_uuid ?? '';
+
+    if (!nextJobUuid) {
+      throw new Error('未返回新的任务 UUID。');
+    }
+
+    await router.push(`/demo/jobs/${nextJobUuid}`);
+  } catch (error) {
+    retryError.value = error?.response?.data?.message ?? error?.message ?? '重新翻译失败，请稍后再试。';
+  } finally {
+    retrying.value = false;
+  }
+}
 
 function goToResult() {
   router.push(`/demo/results/${jobId.value}`);
@@ -185,6 +314,50 @@ function goToResult() {
             </div>
           </section>
 
+          <section class="rounded-[var(--np-radius-xl)] np-glass-feature p-4 sm:p-5">
+            <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
+              原文内容
+            </p>
+            <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">翻译正文</h2>
+            <div class="mt-4 rounded-[var(--np-radius-lg)] border border-white/10 bg-[rgba(13,14,23,0.55)] p-4">
+              <p
+                v-if="sourcePreview"
+                class="whitespace-pre-wrap text-sm leading-7 text-[var(--np-on-surface)]"
+              >
+                {{ sourcePreview }}
+              </p>
+              <p v-else class="text-sm text-[var(--np-on-surface-variant)]">当前任务没有可展示的原文内容。</p>
+            </div>
+          </section>
+
+          <section class="rounded-[var(--np-radius-xl)] np-glass-feature p-4 sm:p-5">
+            <div class="flex items-center gap-3">
+              <div>
+                <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
+                  译文输出
+                </p>
+                <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">翻译后内容</h2>
+              </div>
+              <span
+                v-if="showRunningIndicator"
+                aria-hidden="true"
+                class="job-slash-spinner mt-4 inline-flex text-lg font-semibold text-[var(--np-primary)]"
+              >/</span>
+            </div>
+            <div class="mt-4 rounded-[var(--np-radius-lg)] border border-white/10 bg-[rgba(13,14,23,0.55)] p-4">
+              <p
+                v-if="translatedPreviewDisplay"
+                class="whitespace-pre-wrap text-sm leading-7 text-[var(--np-on-surface)]"
+              >
+                {{ translatedPreviewDisplay }}
+              </p>
+              <p v-else-if="showRunningIndicator" class="text-sm text-[var(--np-on-surface-variant)]">
+                翻译引擎正在处理，请稍候…
+              </p>
+              <p v-else class="text-sm text-[var(--np-on-surface-variant)]">当前任务尚未产出可用译文。</p>
+            </div>
+          </section>
+
           <JobTimeline :status="status" />
         </section>
 
@@ -210,7 +383,7 @@ function goToResult() {
               失败原因
             </p>
             <h2 class="mt-2 np-font-display text-lg font-semibold text-rose-100">失败原因</h2>
-            <p class="mt-3 text-sm leading-6 text-rose-100/85">
+            <p class="mt-3 whitespace-pre-wrap text-sm leading-6 text-rose-100/85">
               {{ failureReason || '后端没有返回额外失败原因。' }}
             </p>
           </section>
@@ -221,6 +394,18 @@ function goToResult() {
             </p>
             <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">下一步操作</h2>
             <div class="mt-4 flex flex-col gap-3">
+              <button
+                v-if="isFailed"
+                class="np-btn-cta w-full !py-3 !text-sm"
+                :disabled="retrying"
+                @click="retryTranslation"
+              >
+                <span v-if="retrying" class="flex items-center justify-center gap-2">
+                  <span class="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                  正在重新创建任务...
+                </span>
+                <span v-else>重新翻译</span>
+              </button>
               <button
                 v-if="isSucceeded"
                 class="np-btn-cta w-full !py-3 !text-sm"
@@ -234,6 +419,9 @@ function goToResult() {
               >
                 返回翻译工作台
               </RouterLink>
+              <p v-if="retryError" class="text-sm leading-6 text-rose-200">
+                {{ retryError }}
+              </p>
             </div>
           </section>
         </aside>
@@ -241,3 +429,32 @@ function goToResult() {
     </template>
   </div>
 </template>
+
+<style scoped>
+.job-slash-spinner {
+  animation: job-slash-spin 1.2s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes job-slash-spin {
+  0% {
+    transform: rotate(0deg);
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  100% {
+    transform: rotate(360deg);
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-slash-spinner {
+    animation: none;
+  }
+}
+</style>

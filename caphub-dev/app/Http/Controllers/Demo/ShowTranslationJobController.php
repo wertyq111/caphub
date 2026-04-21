@@ -42,10 +42,13 @@ class ShowTranslationJobController extends Controller
             'job_uuid' => $job->job_uuid,
             'status' => $job->status->value,
             'input_type' => $job->input_type,
+            'document_type' => $job->document_type,
             'source_lang' => $job->source_lang,
             'target_lang' => $job->target_lang,
             'started_at' => optional($job->started_at)?->toIso8601String(),
             'finished_at' => optional($job->finished_at)?->toIso8601String(),
+            'source_document' => $this->sourceDocument($job),
+            'translated_document' => $job->result?->translated_document_json ?? [],
         ];
 
         if ($job->status === TranslationJobStatus::Failed) {
@@ -56,5 +59,23 @@ class ShowTranslationJobController extends Controller
         }
 
         return response()->json($payload);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    protected function sourceDocument(\App\Models\TranslationJob $job): array
+    {
+        if ($job->input_type === 'plain_text') {
+            return array_filter([
+                'text' => (string) ($job->source_text ?? ''),
+            ], static fn (string $value): bool => $value !== '');
+        }
+
+        return array_filter([
+            'title' => (string) ($job->source_title ?? ''),
+            'summary' => (string) ($job->source_summary ?? ''),
+            'body' => (string) ($job->source_body ?? ''),
+        ], static fn (string $value): bool => $value !== '');
     }
 }

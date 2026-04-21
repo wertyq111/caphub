@@ -61,6 +61,7 @@ const progressLabel = computed(() => {
 
   return '整体进度';
 });
+const showRunningIndicator = computed(() => !['succeeded', 'failed', 'cancelled'].includes(props.status));
 </script>
 
 <template>
@@ -75,7 +76,13 @@ const progressLabel = computed(() => {
         </h2>
       </div>
       <div class="rounded-full np-glass px-3 py-1.5 text-xs text-[var(--np-on-surface-variant)]">
-        当前阶段：<span class="font-medium text-[var(--np-on-surface)]">{{ currentStageLabel }}</span>
+        当前阶段：
+        <span class="font-medium text-[var(--np-on-surface)]">{{ currentStageLabel }}</span>
+        <span
+          v-if="showRunningIndicator"
+          aria-hidden="true"
+          class="job-timeline-spinner ml-1 inline-flex text-sm font-semibold text-[var(--np-primary)]"
+        >/</span>
       </div>
     </div>
 
@@ -150,6 +157,27 @@ const progressLabel = computed(() => {
   }
 
   .job-progress-bar--animated::after {
+    animation: none;
+  }
+}
+
+.job-timeline-spinner {
+  animation: job-timeline-spin 1.2s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes job-timeline-spin {
+  0% {
+    transform: rotate(0deg);
+  }
+
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-timeline-spinner {
     animation: none;
   }
 }

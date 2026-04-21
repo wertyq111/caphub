@@ -117,7 +117,8 @@ it('dispatches an async translation job and allows polling for status and result
     $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}")
         ->assertOk()
         ->assertJsonPath('job_uuid', $job->job_uuid)
-        ->assertJsonPath('status', 'pending');
+        ->assertJsonPath('status', 'pending')
+        ->assertJsonPath('source_document.text', '乙烯价格上涨。');
 
     (new ProcessTranslationJob($job->id))->handle(
         app(TranslationJobService::class),
@@ -164,6 +165,12 @@ it('dispatches an async translation job and allows polling for status and result
         app(AsyncTranslationResultHealthValidator::class),
         app(GlossaryHitPersister::class),
     );
+
+    $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}")
+        ->assertOk()
+        ->assertJsonPath('status', 'succeeded')
+        ->assertJsonPath('source_document.text', '乙烯价格上涨。')
+        ->assertJsonPath('translated_document.text', 'Ethylene prices rose.');
 
     $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}/result")
         ->assertOk()
@@ -1173,6 +1180,8 @@ it('returns json failure details for failed async translation jobs', function ()
     $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}")
         ->assertOk()
         ->assertJsonPath('status', 'failed')
+        ->assertJsonPath('source_document.text', '乙烯价格上涨。')
+        ->assertJsonPath('translated_document', [])
         ->assertJsonPath('error.code', 'translation_failed')
         ->assertJsonPath('error.reason', 'OpenClaw translated_document key [text] contains Chinese characters for English target output.');
 
