@@ -28,4 +28,20 @@ describe('TranslationInputPanel', () => {
     expect(wrapper.text()).toContain('翻译结果');
     expect(wrapper.text()).toContain('Ethylene prices are rising.');
   });
+
+  it('offers an async translation entry and emits async route intent', async () => {
+    const wrapper = mount(TranslationInputPanel);
+
+    const buttons = wrapper.findAll('button');
+    const asyncButton = buttons.find(button => button.text().includes('异步翻译'));
+
+    expect(asyncButton).toBeTruthy();
+
+    await asyncButton.trigger('click');
+
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toMatchObject({
+      input_type: 'plain_text',
+      preferred_route: 'async',
+    });
+  });
 });

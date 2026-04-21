@@ -143,4 +143,60 @@ describe('TranslatePage', () => {
     expect(submitSyncTranslation).not.toHaveBeenCalled();
     expect(push).toHaveBeenCalledWith('/demo/jobs/job-uuid-123');
   });
+
+  it('lets short plain text explicitly create an async job from the page entry', async () => {
+    submitAsyncTranslation.mockResolvedValue({
+      job_uuid: 'job-uuid-manual-async',
+      status: 'pending',
+    });
+
+    const wrapper = mount(TranslatePage, {
+      global: {
+        stubs: {
+          RouterLink: RouterLinkStub,
+          TranslationInputPanel: {
+            template: `
+              <div>
+                <button data-test="submit-async" @click="$emit('submit', payload)">submit async</button>
+              </div>
+            `,
+            data() {
+              return {
+                payload: {
+                  input_type: 'plain_text',
+                  document_type: 'chemical_news',
+                  source_lang: 'zh',
+                  target_lang: 'en',
+                  content: {
+                    text: '乙烯价格上涨。',
+                  },
+                  preferred_route: 'async',
+                },
+              };
+            },
+          },
+          CapabilitySidebar: true,
+          AppErrorState: {
+            props: ['message'],
+            template: '<div data-test="error">{{ message }}</div>',
+          },
+        },
+      },
+    });
+
+    await wrapper.get('[data-test="submit-async"]').trigger('click');
+    await flushPromises();
+
+    expect(submitAsyncTranslation).toHaveBeenCalledWith({
+      input_type: 'plain_text',
+      document_type: 'chemical_news',
+      source_lang: 'zh',
+      target_lang: 'en',
+      content: {
+        text: '乙烯价格上涨。',
+      },
+    });
+    expect(submitSyncTranslation).not.toHaveBeenCalled();
+    expect(push).toHaveBeenCalledWith('/demo/jobs/job-uuid-manual-async');
+  });
 });

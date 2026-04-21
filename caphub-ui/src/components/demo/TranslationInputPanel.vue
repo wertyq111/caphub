@@ -32,7 +32,7 @@ function switchMode(nextMode) {
   emit('mode-change', nextMode);
 }
 
-function submit() {
+function buildPayload(preferredRoute = 'auto') {
   const content = mode.value === 'plain_text'
     ? { text: form.text }
     : {
@@ -41,13 +41,22 @@ function submit() {
       body: form.body,
     };
 
-  emit('submit', {
+  return {
     input_type: mode.value,
     document_type: 'chemical_news',
     source_lang: form.source_lang,
     target_lang: form.target_lang,
     content,
-  });
+    preferred_route: preferredRoute,
+  };
+}
+
+function submit() {
+  emit('submit', buildPayload('auto'));
+}
+
+function submitAsync() {
+  emit('submit', buildPayload('async'));
 }
 
 function hasValue(value) {
@@ -56,6 +65,12 @@ function hasValue(value) {
 
 function translatedDocument() {
   return props.translationResult?.translated_document ?? {};
+}
+
+function routeHint() {
+  return mode.value === 'plain_text'
+    ? '短文本默认同步返回，也可以直接创建异步任务。'
+    : 'JSON 文本默认走异步任务，也可以直接从这里创建。';
 }
 </script>
 
@@ -154,14 +169,14 @@ function translatedDocument() {
         <!-- Output Panel -->
         <div class="rounded-[var(--np-radius-xl)] np-glass-strong p-2.5" style="border-color: rgba(172,137,255,0.12);">
           <div class="text-xs text-[var(--np-secondary)]" style="opacity: 0.85;">翻译结果</div>
-          <div class="mt-1 min-h-[20.25rem] rounded-[var(--np-radius-md)] border border-[var(--np-outline-variant)] p-3 text-xs leading-6 text-[var(--np-on-surface-variant)] sm:text-sm" style="background: rgba(13,14,23,0.6);">
+          <div class="mt-1 min-h-[20.25rem] max-h-[20.25rem] overflow-auto overflow-x-hidden rounded-[var(--np-radius-md)] border border-[var(--np-outline-variant)] p-3 text-xs leading-6 text-[var(--np-on-surface-variant)] sm:text-sm" style="background: rgba(13,14,23,0.6);">
             <template v-if="hasValue(translatedDocument().text)">
-              <p class="whitespace-pre-wrap text-[var(--np-on-surface)]">{{ translatedDocument().text }}</p>
+              <p class="whitespace-pre-wrap break-all text-[var(--np-on-surface)]">{{ translatedDocument().text }}</p>
             </template>
             <div v-else-if="hasValue(translatedDocument().title) || hasValue(translatedDocument().summary) || hasValue(translatedDocument().body)" class="space-y-2">
-              <p v-if="hasValue(translatedDocument().title)" class="font-medium text-white">{{ translatedDocument().title }}</p>
+              <p v-if="hasValue(translatedDocument().title)" class="break-all font-medium text-white">{{ translatedDocument().title }}</p>
               <p v-if="hasValue(translatedDocument().summary)" class="text-[var(--np-on-surface-variant)]">{{ translatedDocument().summary }}</p>
-              <p v-if="hasValue(translatedDocument().body)" class="whitespace-pre-wrap text-[var(--np-on-surface)]">{{ translatedDocument().body }}</p>
+              <p v-if="hasValue(translatedDocument().body)" class="whitespace-pre-wrap break-all text-[var(--np-on-surface)]">{{ translatedDocument().body }}</p>
             </div>
             <p v-else class="text-[var(--np-on-surface-variant)]" style="opacity: 0.6;">提交后将在这里显示翻译结果。</p>
           </div>
@@ -181,7 +196,10 @@ function translatedDocument() {
       </div>
 
       <!-- Start Translation Button — standalone row -->
-      <div class="flex justify-center pt-1">
+      <div class="flex flex-col items-center gap-3 pt-1">
+        <div class="text-center text-[11px] leading-5 text-[var(--np-on-surface-variant)]" style="opacity: 0.78;">
+          {{ routeHint() }}
+        </div>
         <button
           class="np-btn-cta w-full max-w-md !py-3.5 !text-base sm:w-auto sm:min-w-[280px]"
           :disabled="props.loading"
@@ -194,6 +212,16 @@ function translatedDocument() {
           <span v-else class="flex items-center gap-2">
             <span>⬡</span>
             开始翻译
+          </span>
+        </button>
+        <button
+          class="w-full max-w-md rounded-full np-glass px-6 py-3 text-sm font-medium text-[var(--np-on-surface)] transition hover:text-[var(--np-primary)] sm:w-auto sm:min-w-[280px]"
+          :disabled="props.loading"
+          @click="submitAsync"
+        >
+          <span class="flex items-center justify-center gap-2">
+            <span>⏳</span>
+            异步翻译
           </span>
         </button>
       </div>

@@ -59,6 +59,10 @@ function handleModeChange(mode) {
 }
 
 function shouldUseAsyncRoute(payload) {
+  if (payload.preferred_route === 'async') {
+    return true;
+  }
+
   if (payload.input_type !== 'plain_text') {
     return true;
   }
@@ -75,8 +79,10 @@ async function handleSubmit(payload) {
   loading.value = true;
 
   try {
+    const { preferred_route, ...requestPayload } = payload;
+
     if (shouldUseAsyncRoute(payload)) {
-      const data = await submitAsyncTranslation(payload);
+      const data = await submitAsyncTranslation(requestPayload);
       latestJobUuid.value = data.job_uuid ?? '';
 
       if (latestJobUuid.value) {
@@ -86,7 +92,7 @@ async function handleSubmit(payload) {
       return;
     }
 
-    const data = await submitSyncTranslation(payload);
+    const data = await submitSyncTranslation(requestPayload);
     translationResult.value = data;
   } catch (error) {
     errorMessage.value = error?.response?.data?.message ?? 'Failed to translate content.';
