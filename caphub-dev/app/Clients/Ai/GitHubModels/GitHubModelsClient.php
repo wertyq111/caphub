@@ -206,7 +206,7 @@ class GitHubModelsClient
 
     protected function timeout(): int
     {
-        return max(1, (int) config('services.github_models.timeout', 45));
+        return max(1, (int) config('services.github_models.timeout', 120));
     }
 
     protected function retryTimes(): int

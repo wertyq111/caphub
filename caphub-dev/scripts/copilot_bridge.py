@@ -22,7 +22,7 @@ EXCLUDED_TOOLS = (
     os.environ.get("COPILOT_BRIDGE_EXCLUDED_TOOLS", "shell,write,read,url,memory").strip()
     or "shell,write,read,url,memory"
 )
-DEFAULT_TIMEOUT = max(1, int(os.environ.get("COPILOT_BRIDGE_TIMEOUT", "45")))
+DEFAULT_TIMEOUT = max(1, int(os.environ.get("COPILOT_BRIDGE_TIMEOUT", "120")))
 
 
 def json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict) -> None:
