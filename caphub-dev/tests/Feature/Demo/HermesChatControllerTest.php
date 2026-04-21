@@ -7,7 +7,7 @@ use Illuminate\Support\Facades\Http;
 it('sends chat completions through the current caphub assistant profile with project knowledge attached', function () {
     Cache::flush();
 
-    $workspaceRoot = fakeWorkspaceRoot();
+    $workspaceRoot = fakeWorkspaceRoot(includeProjectInfo: false);
 
     config()->set('services.hermes', [
         'base_url' => 'https://translate.example.test/v1',
@@ -102,7 +102,7 @@ it('fails fast when the chat project knowledge workspace is missing', function (
     });
 });
 
-function fakeWorkspaceRoot(): string
+function fakeWorkspaceRoot(bool $includeProjectInfo = true): string
 {
     $root = sys_get_temp_dir().'/caphub-chat-workspace-'.bin2hex(random_bytes(5));
 
@@ -110,13 +110,15 @@ function fakeWorkspaceRoot(): string
     mkdir($root.'/caphub-dev/routes', 0777, true);
     mkdir($root.'/caphub-ui/src/router', 0777, true);
 
-    file_put_contents($root.'/project-info.json', json_encode([
-        'name' => 'CapHub Demo Workspace',
-        'stack' => [
-            'backend' => ['framework' => 'Laravel 13'],
-            'frontend' => ['framework' => 'Vue 3'],
-        ],
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+    if ($includeProjectInfo) {
+        file_put_contents($root.'/project-info.json', json_encode([
+            'name' => 'CapHub Demo Workspace',
+            'stack' => [
+                'backend' => ['framework' => 'Laravel 13'],
+                'frontend' => ['framework' => 'Vue 3'],
+            ],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT));
+    }
 
     file_put_contents($root.'/README.md', <<<'MD'
 # CapHub Demo Workspace

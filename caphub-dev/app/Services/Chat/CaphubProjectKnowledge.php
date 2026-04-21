@@ -42,14 +42,14 @@ class CaphubProjectKnowledge
      */
     protected function knowledgeFiles(string $workspaceRoot): array
     {
-        return [
-            'project-info.json' => $this->requireFile($workspaceRoot.'/project-info.json'),
+        return array_filter([
+            'project-info.json' => $this->optionalFile($workspaceRoot.'/project-info.json'),
             'README.md' => $this->requireFile($workspaceRoot.'/README.md'),
             'caphub-dev/README.md' => $this->requireFile($workspaceRoot.'/caphub-dev/README.md'),
             'caphub-dev/routes/api.php' => $this->requireFile($workspaceRoot.'/caphub-dev/routes/api.php'),
             'caphub-ui/README.md' => $this->requireFile($workspaceRoot.'/caphub-ui/README.md'),
             'caphub-ui/src/router/index.js' => $this->requireFile($workspaceRoot.'/caphub-ui/src/router/index.js'),
-        ];
+        ], fn (?string $path): bool => is_string($path));
     }
 
     protected function resolveWorkspaceRoot(): string
@@ -68,7 +68,11 @@ class CaphubProjectKnowledge
         foreach ($candidates as $candidate) {
             $root = $this->normalizeRoot($candidate, false);
 
-            if (is_file($root.'/project-info.json') && is_file($root.'/README.md')) {
+            if (
+                is_file($root.'/README.md')
+                && is_file($root.'/caphub-dev/README.md')
+                && is_file($root.'/caphub-ui/README.md')
+            ) {
                 return $root;
             }
         }
@@ -101,6 +105,15 @@ class CaphubProjectKnowledge
     {
         if (! is_file($path) || ! is_readable($path)) {
             throw new RuntimeException(sprintf('CapHub knowledge file [%s] is missing or unreadable.', $path));
+        }
+
+        return $path;
+    }
+
+    protected function optionalFile(string $path): ?string
+    {
+        if (! is_file($path) || ! is_readable($path)) {
+            return null;
         }
 
         return $path;
