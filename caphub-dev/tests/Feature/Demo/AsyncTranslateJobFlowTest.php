@@ -910,6 +910,92 @@ it('retries invalid html batch nodes together before falling back to per-node tr
     });
 });
 
+it('treats html entity placeholders left in batch output as invalid and retries the affected segments', function () {
+    Bus::fake();
+    config()->set('services.openclaw', [
+        'base_url' => 'https://openclaw.example.test',
+        'api_key' => 'test-api-key',
+        'translation_agent' => 'chemical-news-translator',
+        'timeout' => 120,
+        'retry_times' => 0,
+    ]);
+
+    $html = '<p>&ldquo;第一段内容&rdquo;</p><p><strong>&middot;&nbsp;</strong>第二段内容</p>';
+    $invalidBatchDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => '__HTML_ENTITY_0__First paragraph__HTML_ENTITY_1__',
+        ],
+        1 => [
+            0 => '__HTML_ENTITY_0____HTML_ENTITY_1__',
+            1 => 'Second paragraph content',
+        ],
+    ]);
+    $retryBatchDocument = fakeSemanticSegmentDocument($html, [
+        0 => [
+            0 => '&ldquo;First paragraph&rdquo;',
+        ],
+        1 => [
+            0 => '&middot;&nbsp;',
+            1 => 'Second paragraph content',
+        ],
+    ]);
+
+    Http::fake([
+        '*' => Http::sequence()
+            ->push([
+                'translated_document' => $invalidBatchDocument,
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openclaw/chemical-news-translator',
+                ],
+            ], 200)
+            ->push([
+                'translated_document' => $retryBatchDocument,
+                'glossary_hits' => [],
+                'risk_flags' => [],
+                'notes' => [],
+                'meta' => [
+                    'schema_version' => 'v1',
+                    'provider_model' => 'openclaw/chemical-news-translator',
+                ],
+            ], 200),
+    ]);
+
+    $response = $this->postJson('/api/demo/translate/async', [
+        'input_type' => 'plain_text',
+        'document_type' => 'chemical_news',
+        'source_lang' => 'zh-CN',
+        'target_lang' => 'en',
+        'content' => [
+            'text' => $html,
+        ],
+    ]);
+
+    $job = TranslationJob::query()
+        ->where('job_uuid', $response->json('job_uuid'))
+        ->firstOrFail();
+
+    (new ProcessTranslationJob($job->id))->handle(
+        app(TranslationJobService::class),
+        app(TranslationService::class),
+    );
+
+    Http::assertSentCount(2);
+
+    Bus::assertDispatched(FinalizeTranslationJob::class, function (FinalizeTranslationJob $finalizeJob) {
+        expect($finalizeJob->result['response']['translated_document']['text'])
+            ->toBe('<p>&ldquo;First paragraph&rdquo;</p><p><strong>&middot;&nbsp;</strong>Second paragraph content</p>');
+        expect($finalizeJob->result['response']['meta']['translated_text_nodes'])->toBe(3);
+        expect($finalizeJob->result['response']['meta']['fallback_text_nodes'])->toBe(0);
+        expect($finalizeJob->result['response']['meta']['html_fallback_segment_count'])->toBe(0);
+
+        return true;
+    });
+});
+
 it('retries html article body segments before falling back to original html', function () {
     Bus::fake();
     config()->set('services.openclaw', [

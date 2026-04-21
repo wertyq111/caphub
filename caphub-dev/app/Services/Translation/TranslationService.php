@@ -1613,6 +1613,10 @@ class TranslationService
      */
     protected function translatedTextContainsSourceResidue(string $translatedText, string $targetLang): bool
     {
+        if (preg_match('/__HTML_ENTITY_\d+__/u', $translatedText) === 1) {
+            return true;
+        }
+
         $normalizedTargetLang = strtolower(trim($targetLang));
 
         if ($normalizedTargetLang !== 'en' && ! str_starts_with($normalizedTargetLang, 'en-')) {
