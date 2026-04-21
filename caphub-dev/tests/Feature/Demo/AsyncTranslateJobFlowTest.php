@@ -9,6 +9,7 @@ use App\Services\Translation\TranslationService;
 use App\Enums\TranslationJobStatus;
 use App\Jobs\FinalizeTranslationJob;
 use App\Jobs\ProcessTranslationJob;
+use App\Models\AiInvocation;
 use App\Models\Glossary;
 use App\Models\SystemSetting;
 use App\Models\TranslationJob;
@@ -170,7 +171,9 @@ it('dispatches an async translation job and allows polling for status and result
         ->assertOk()
         ->assertJsonPath('status', 'succeeded')
         ->assertJsonPath('source_document.text', '乙烯价格上涨。')
-        ->assertJsonPath('translated_document.text', 'Ethylene prices rose.');
+        ->assertJsonPath('translated_document.text', 'Ethylene prices rose.')
+        ->assertJsonPath('translation_provider', 'github_models')
+        ->assertJsonPath('translation_agent', 'gpt-4o');
 
     $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}/result")
         ->assertOk()
@@ -1177,11 +1180,28 @@ it('returns json failure details for failed async translation jobs', function ()
         'finished_at' => now(),
     ])->save();
 
+    AiInvocation::query()->create([
+        'job_id' => $job->id,
+        'agent_name' => 'chemical-news-translator',
+        'request_payload' => [
+            'execution_context' => [
+                'provider' => 'hermes',
+            ],
+        ],
+        'response_payload_summary' => null,
+        'status' => 'failed',
+        'duration_ms' => 1200,
+        'error_message' => 'upstream timeout',
+        'created_at' => now(),
+    ]);
+
     $this->getJson("/api/demo/translate/jobs/{$job->job_uuid}")
         ->assertOk()
         ->assertJsonPath('status', 'failed')
         ->assertJsonPath('source_document.text', '乙烯价格上涨。')
         ->assertJsonPath('translated_document', [])
+        ->assertJsonPath('translation_provider', 'hermes')
+        ->assertJsonPath('translation_agent', 'chemical-news-translator')
         ->assertJsonPath('error.code', 'translation_failed')
         ->assertJsonPath('error.reason', 'OpenClaw translated_document key [text] contains Chinese characters for English target output.');
 

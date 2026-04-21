@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Demo;
 use App\Enums\TranslationJobStatus;
 use App\Services\TaskCenter\TranslationJobService;
 use App\Http\Controllers\Controller;
+use App\Models\AiInvocation;
 use Illuminate\Http\JsonResponse;
 
 class ShowTranslationJobController extends Controller
@@ -37,6 +38,12 @@ class ShowTranslationJobController extends Controller
             ], 404);
         }
 
+        $latestInvocation = AiInvocation::query()
+            ->where('job_id', $job->id)
+            ->latest('created_at')
+            ->latest('id')
+            ->first();
+
         $payload = [
             'job_id' => $job->id,
             'job_uuid' => $job->job_uuid,
@@ -49,6 +56,8 @@ class ShowTranslationJobController extends Controller
             'finished_at' => optional($job->finished_at)?->toIso8601String(),
             'source_document' => $this->sourceDocument($job),
             'translated_document' => $job->result?->translated_document_json ?? [],
+            'translation_provider' => $this->resolveTranslationProvider($job, $latestInvocation),
+            'translation_agent' => $this->resolveTranslationAgent($job, $latestInvocation),
         ];
 
         if ($job->status === TranslationJobStatus::Failed) {
@@ -77,5 +86,37 @@ class ShowTranslationJobController extends Controller
             'summary' => (string) ($job->source_summary ?? ''),
             'body' => (string) ($job->source_body ?? ''),
         ], static fn (string $value): bool => $value !== '');
+    }
+
+    protected function resolveTranslationProvider(\App\Models\TranslationJob $job, ?AiInvocation $latestInvocation): ?string
+    {
+        $provider = data_get($job->result?->meta_payload ?? [], 'provider');
+
+        if (is_string($provider) && $provider !== '') {
+            return $provider;
+        }
+
+        $provider = data_get($latestInvocation?->request_payload, 'execution_context.provider');
+
+        return is_string($provider) && $provider !== '' ? $provider : null;
+    }
+
+    protected function resolveTranslationAgent(\App\Models\TranslationJob $job, ?AiInvocation $latestInvocation): ?string
+    {
+        $agent = $latestInvocation?->agent_name;
+
+        if (is_string($agent) && $agent !== '') {
+            return $agent;
+        }
+
+        $agent = data_get($job->result?->meta_payload ?? [], 'translation_agent');
+
+        if (is_string($agent) && $agent !== '') {
+            return $agent;
+        }
+
+        $providerModel = (string) data_get($job->result?->meta_payload ?? [], 'provider_model', '');
+
+        return $providerModel !== '' ? $providerModel : null;
     }
 }

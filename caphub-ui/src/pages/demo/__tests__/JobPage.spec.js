@@ -56,6 +56,8 @@ describe('JobPage', () => {
         document_type: 'chemical_news',
         source_lang: 'zh',
         target_lang: 'en',
+        translation_provider: 'github_models',
+        translation_agent: 'gpt-4o',
         started_at: '2026-04-21T02:00:00.000Z',
         finished_at: '2026-04-21T02:00:05.000Z',
         source_document: {
@@ -82,6 +84,9 @@ describe('JobPage', () => {
 
     expect(wrapper.text()).toContain('翻译正文');
     expect(wrapper.text()).toContain('翻译后内容');
+    expect(wrapper.text()).toContain('当前干活的 Agent');
+    expect(wrapper.text()).toContain('Copilot');
+    expect(wrapper.text()).toContain('gpt-4o');
     expect(wrapper.text()).toContain('乙烯价格上涨。');
     expect(wrapper.text()).toContain('Ethylene prices are rising.');
     expect(wrapper.text()).toContain('整体进度');
@@ -109,6 +114,8 @@ describe('JobPage', () => {
         document_type: 'chemical_news',
         source_lang: 'zh',
         target_lang: 'en',
+        translation_provider: 'hermes',
+        translation_agent: 'chemical-news-translator',
         started_at: null,
         finished_at: null,
         source_document: {
@@ -136,6 +143,8 @@ describe('JobPage', () => {
     expect(wrapper.text()).toContain('失败原因');
     expect(wrapper.text()).toContain('重新翻译');
     expect(wrapper.text()).toContain('上游接口超时。');
+    expect(wrapper.text()).toContain('Hermes');
+    expect(wrapper.text()).toContain('chemical-news-translator');
 
     const retryButton = wrapper.findAll('button').find(button => button.text().includes('重新翻译'));
     expect(retryButton).toBeTruthy();

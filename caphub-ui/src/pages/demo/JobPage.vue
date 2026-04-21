@@ -4,6 +4,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { submitAsyncTranslation } from '../../api/translation';
 import { useJobPolling } from '../../composables/useJobPolling';
 import JobTimeline from '../../components/demo/JobTimeline.vue';
+import AgentGlyph from '../../components/public/AgentGlyph.vue';
 import AppLoader from '../../components/shared/AppLoader.vue';
 import AppErrorState from '../../components/shared/AppErrorState.vue';
 
@@ -60,6 +61,11 @@ const statusMeta = {
 const inputTypeLabelMap = {
   plain_text: '纯文本',
   article_payload: 'JSON 文本',
+};
+const providerLabelMap = {
+  openclaw: 'OpenClaw',
+  hermes: 'Hermes',
+  github_models: 'Copilot',
 };
 
 const status = computed(() => jobQuery.data.value?.status ?? 'pending');
@@ -157,6 +163,9 @@ function startTypingAnimation(text) {
 const startedAtLabel = computed(() => formatTimestamp(jobQuery.data.value?.started_at));
 const finishedAtLabel = computed(() => formatTimestamp(jobQuery.data.value?.finished_at));
 const failureReason = computed(() => jobQuery.data.value?.error?.reason ?? '');
+const translationProviderKey = computed(() => jobQuery.data.value?.translation_provider ?? '');
+const translationProviderLabel = computed(() => providerLabelMap[translationProviderKey.value] ?? '当前接口');
+const translationAgent = computed(() => jobQuery.data.value?.translation_agent ?? '等待派发');
 const sourcePreview = computed(() => flattenDocument(
   jobQuery.data.value?.source_document ?? {},
   jobQuery.data.value?.input_type,
@@ -168,6 +177,17 @@ const translatedPreview = computed(() => flattenDocument(
 const translatedPreviewDisplay = computed(() => (
   isSucceeded.value ? animatedTranslatedText.value : translatedPreview.value
 ));
+const robotState = computed(() => {
+  if (isSucceeded.value) {
+    return 'success';
+  }
+
+  if (isFailed.value) {
+    return 'failed';
+  }
+
+  return 'working';
+});
 
 watch(
   () => [isSucceeded.value, translatedPreview.value],
@@ -315,46 +335,46 @@ function goToResult() {
           </section>
 
           <section class="rounded-[var(--np-radius-xl)] np-glass-feature p-4 sm:p-5">
-            <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
-              原文内容
-            </p>
-            <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">翻译正文</h2>
-            <div class="mt-4 rounded-[var(--np-radius-lg)] border border-white/10 bg-[rgba(13,14,23,0.55)] p-4">
-              <p
-                v-if="sourcePreview"
-                class="whitespace-pre-wrap text-sm leading-7 text-[var(--np-on-surface)]"
-              >
-                {{ sourcePreview }}
-              </p>
-              <p v-else class="text-sm text-[var(--np-on-surface-variant)]">当前任务没有可展示的原文内容。</p>
-            </div>
-          </section>
+            <div class="grid gap-4 lg:grid-cols-2">
+              <div class="min-w-0">
+                <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
+                  原文内容
+                </p>
+                <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">翻译正文</h2>
+                <div class="mt-4 max-h-[22rem] overflow-auto rounded-[var(--np-radius-lg)] border border-white/10 bg-[rgba(13,14,23,0.55)] p-4">
+                  <p
+                    v-if="sourcePreview"
+                    class="whitespace-pre-wrap break-all text-sm leading-7 text-[var(--np-on-surface)]"
+                  >
+                    {{ sourcePreview }}
+                  </p>
+                  <p v-else class="text-sm text-[var(--np-on-surface-variant)]">当前任务没有可展示的原文内容。</p>
+                </div>
+              </div>
 
-          <section class="rounded-[var(--np-radius-xl)] np-glass-feature p-4 sm:p-5">
-            <div class="flex items-center gap-3">
-              <div>
+              <div class="min-w-0">
                 <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
                   译文输出
                 </p>
                 <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">翻译后内容</h2>
+                <div class="relative mt-4 max-h-[22rem] overflow-auto rounded-[var(--np-radius-lg)] border border-white/10 bg-[rgba(13,14,23,0.55)] p-4">
+                  <span
+                    v-if="showRunningIndicator"
+                    aria-hidden="true"
+                    class="job-slash-spinner absolute right-4 top-4 inline-flex text-lg font-semibold text-[var(--np-primary)]"
+                  >/</span>
+                  <p
+                    v-if="translatedPreviewDisplay"
+                    class="pr-6 whitespace-pre-wrap break-all text-sm leading-7 text-[var(--np-on-surface)]"
+                  >
+                    {{ translatedPreviewDisplay }}
+                  </p>
+                  <p v-else-if="showRunningIndicator" class="pr-6 text-sm text-[var(--np-on-surface-variant)]">
+                    翻译引擎正在处理，请稍候…
+                  </p>
+                  <p v-else class="text-sm text-[var(--np-on-surface-variant)]">当前任务尚未产出可用译文。</p>
+                </div>
               </div>
-              <span
-                v-if="showRunningIndicator"
-                aria-hidden="true"
-                class="job-slash-spinner mt-4 inline-flex text-lg font-semibold text-[var(--np-primary)]"
-              >/</span>
-            </div>
-            <div class="mt-4 rounded-[var(--np-radius-lg)] border border-white/10 bg-[rgba(13,14,23,0.55)] p-4">
-              <p
-                v-if="translatedPreviewDisplay"
-                class="whitespace-pre-wrap text-sm leading-7 text-[var(--np-on-surface)]"
-              >
-                {{ translatedPreviewDisplay }}
-              </p>
-              <p v-else-if="showRunningIndicator" class="text-sm text-[var(--np-on-surface-variant)]">
-                翻译引擎正在处理，请稍候…
-              </p>
-              <p v-else class="text-sm text-[var(--np-on-surface-variant)]">当前任务尚未产出可用译文。</p>
             </div>
           </section>
 
@@ -362,6 +382,39 @@ function goToResult() {
         </section>
 
         <aside class="space-y-4">
+          <section class="rounded-[var(--np-radius-xl)] np-glass-feature p-4">
+            <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
+              当前 Agent
+            </p>
+            <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">当前干活的 Agent</h2>
+            <div class="mt-4 flex items-start gap-3">
+              <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-[var(--np-radius-md)] bg-[rgba(153,247,255,0.12)] text-[var(--np-primary)]">
+                <AgentGlyph :provider-key="translationProviderKey" size-class="h-8 w-8" />
+              </div>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-semibold text-[var(--np-on-surface)]">{{ translationProviderLabel }}</div>
+                <div class="mt-1 break-all text-xs text-[var(--np-on-surface-variant)]">{{ translationAgent }}</div>
+              </div>
+            </div>
+            <div class="mt-4 flex items-center gap-4 rounded-[var(--np-radius-lg)] np-glass p-3">
+              <div class="job-robot shrink-0" :class="`job-robot--${robotState}`">
+                <div class="job-robot__head">
+                  <span class="job-robot__eye job-robot__eye--left" />
+                  <span class="job-robot__eye job-robot__eye--right" />
+                  <span class="job-robot__mouth" />
+                </div>
+                <div class="job-robot__body" />
+                <span class="job-robot__arm job-robot__arm--left" />
+                <span class="job-robot__arm job-robot__arm--right" />
+              </div>
+              <div class="text-xs leading-6 text-[var(--np-on-surface-variant)]">
+                <p v-if="robotState === 'working'">小机器人正在努力处理这条任务。</p>
+                <p v-else-if="robotState === 'success'">小机器人已经顺利完成翻译。</p>
+                <p v-else>小机器人这次没跑通，建议检查失败原因后重试。</p>
+              </div>
+            </div>
+          </section>
+
           <section class="rounded-[var(--np-radius-xl)] np-glass-feature p-4">
             <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
               实时状态
@@ -454,6 +507,172 @@ function goToResult() {
 
 @media (prefers-reduced-motion: reduce) {
   .job-slash-spinner {
+    animation: none;
+  }
+}
+
+.job-robot {
+  position: relative;
+  width: 56px;
+  height: 68px;
+}
+
+.job-robot__head {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  width: 40px;
+  height: 28px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(153, 247, 255, 0.28), rgba(91, 133, 255, 0.16));
+  border: 1px solid rgba(153, 247, 255, 0.25);
+}
+
+.job-robot__eye {
+  position: absolute;
+  top: 10px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #99f7ff;
+}
+
+.job-robot__eye--left {
+  left: 11px;
+}
+
+.job-robot__eye--right {
+  right: 11px;
+}
+
+.job-robot__mouth {
+  position: absolute;
+  left: 14px;
+  bottom: 6px;
+  width: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.65);
+}
+
+.job-robot__body {
+  position: absolute;
+  top: 31px;
+  left: 14px;
+  width: 28px;
+  height: 24px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(95, 193, 255, 0.25), rgba(29, 78, 216, 0.24));
+  border: 1px solid rgba(95, 193, 255, 0.28);
+}
+
+.job-robot__arm {
+  position: absolute;
+  top: 36px;
+  width: 14px;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(153, 247, 255, 0.75);
+}
+
+.job-robot__arm--left {
+  left: 2px;
+  transform-origin: right center;
+}
+
+.job-robot__arm--right {
+  right: 2px;
+  transform-origin: left center;
+}
+
+.job-robot--working .job-robot__head {
+  animation: robot-bob 1.6s ease-in-out infinite;
+}
+
+.job-robot--working .job-robot__arm--left {
+  animation: robot-arm-left 0.9s ease-in-out infinite;
+}
+
+.job-robot--working .job-robot__arm--right {
+  animation: robot-arm-right 0.9s ease-in-out 0.12s infinite;
+}
+
+.job-robot--success .job-robot__head,
+.job-robot--success .job-robot__body {
+  box-shadow: 0 0 18px rgba(74, 222, 128, 0.32);
+}
+
+.job-robot--success .job-robot__mouth {
+  width: 14px;
+  height: 6px;
+  bottom: 5px;
+  border-radius: 0 0 14px 14px;
+  background: transparent;
+  border-bottom: 2px solid rgba(74, 222, 128, 0.9);
+}
+
+.job-robot--failed .job-robot__head {
+  animation: robot-droop 2s ease-in-out infinite;
+}
+
+.job-robot--failed .job-robot__eye {
+  height: 2px;
+}
+
+.job-robot--failed .job-robot__mouth {
+  width: 14px;
+  height: 6px;
+  bottom: 4px;
+  border-radius: 14px 14px 0 0;
+  background: transparent;
+  border-top: 2px solid rgba(251, 113, 133, 0.9);
+}
+
+@keyframes robot-bob {
+  0%, 100% {
+    transform: translateY(0);
+  }
+
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes robot-arm-left {
+  0%, 100% {
+    transform: rotate(18deg);
+  }
+
+  50% {
+    transform: rotate(-18deg);
+  }
+}
+
+@keyframes robot-arm-right {
+  0%, 100% {
+    transform: rotate(-18deg);
+  }
+
+  50% {
+    transform: rotate(18deg);
+  }
+}
+
+@keyframes robot-droop {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+
+  50% {
+    transform: rotate(6deg) translateY(2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .job-robot--working .job-robot__head,
+  .job-robot--working .job-robot__arm--left,
+  .job-robot--working .job-robot__arm--right,
+  .job-robot--failed .job-robot__head {
     animation: none;
   }
 }
