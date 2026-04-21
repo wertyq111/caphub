@@ -8,7 +8,6 @@ const props = defineProps({
   },
 });
 
-const stages = ['pending', 'queued', 'processing', 'succeeded'];
 const stageLabels = {
   pending: '等待受理',
   queued: '排队中',
@@ -24,12 +23,6 @@ const statusToStageIndex = {
   succeeded: 3,
   failed: 2,
   cancelled: 1,
-};
-
-function isDone(current, stage) {
-  const currentIndex = statusToStageIndex[current] ?? 0;
-
-  return stages.indexOf(stage) <= currentIndex;
 }
 
 const currentStageLabel = computed(() => stageLabels[props.status] ?? '状态更新中');
@@ -50,17 +43,7 @@ const progressToneClass = computed(() => {
 
   return 'from-sky-400 via-cyan-300 to-sky-500';
 });
-const progressLabel = computed(() => {
-  if (props.status === 'failed') {
-    return '处理中断';
-  }
-
-  if (props.status === 'cancelled') {
-    return '流程取消';
-  }
-
-  return '整体进度';
-});
+const progressLabel = computed(() => stageLabels[props.status] ?? '状态更新中');
 const showRunningIndicator = computed(() => !['succeeded', 'failed', 'cancelled'].includes(props.status));
 </script>
 
@@ -102,28 +85,6 @@ const showRunningIndicator = computed(() => !['succeeded', 'failed', 'cancelled'
         />
       </div>
     </div>
-
-    <ol class="mt-4 grid gap-3 md:grid-cols-4">
-      <li
-        v-for="stage in stages"
-        :key="stage"
-        class="rounded-[var(--np-radius-md)] border px-3 py-3 text-sm transition"
-        :class="isDone(status, stage)
-          ? 'border-emerald-300/30 bg-emerald-300/12 text-emerald-50'
-          : 'border-white/10 bg-slate-950/30 text-slate-400'"
-      >
-        <div class="flex items-center gap-2">
-          <span
-            class="inline-flex h-2.5 w-2.5 rounded-full"
-            :class="isDone(status, stage) ? 'bg-emerald-300' : 'bg-slate-600'"
-          />
-          <span class="font-medium">{{ stageLabels[stage] }}</span>
-        </div>
-        <p class="mt-2 text-xs uppercase tracking-[0.16em] opacity-70">
-          {{ stage }}
-        </p>
-      </li>
-    </ol>
   </section>
 </template>
 

@@ -45,7 +45,7 @@ describe('JobPage', () => {
     vi.useRealTimers();
   });
 
-  it('renders source content, animated translated content, and opens the result view', async () => {
+  it('renders source content, translated content, and the current agent without a result button', async () => {
     useJobPolling.mockReturnValue({
       isLoading: ref(false),
       isError: ref(false),
@@ -89,13 +89,10 @@ describe('JobPage', () => {
     expect(wrapper.text()).toContain('gpt-4o');
     expect(wrapper.text()).toContain('乙烯价格上涨。');
     expect(wrapper.text()).toContain('Ethylene prices are rising.');
-    expect(wrapper.text()).toContain('整体进度');
-    expect(wrapper.text()).toContain('查看翻译结果');
-
-    await wrapper.get('button.np-btn-cta').trigger('click');
-    await flushPromises();
-
-    expect(push).toHaveBeenCalledWith('/demo/results/job-uuid-demo');
+    expect(wrapper.text()).toContain('已完成');
+    expect(wrapper.text()).not.toContain('整体进度');
+    expect(wrapper.text()).not.toContain('查看翻译结果');
+    expect(wrapper.text()).toContain('译文已经展示在当前页面');
   });
 
   it('shows retry action and resubmits the failed job with original content', async () => {
