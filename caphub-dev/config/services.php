@@ -54,6 +54,7 @@ return [
         'chat_base_url' => env('HERMES_CHAT_BASE_URL', env('HERMES_BASE_URL')),
         'chat_api_key' => env('HERMES_CHAT_API_KEY', env('HERMES_API_KEY')),
         'chat_profile' => env('HERMES_CHAT_PROFILE', 'caphub-assistant'),
+        'workspace_root' => env('CAPHUB_WORKSPACE_ROOT'),
     ],
 
     'github_models' => [
