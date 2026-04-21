@@ -24,10 +24,10 @@ beforeEach(function () {
     ]);
 
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 });
 

@@ -5,40 +5,44 @@ use App\Clients\Ai\GitHubModels\GitHubModelsTranslationGateway;
 use App\Clients\Ai\OpenClaw\AiInvocationLogger;
 use App\Clients\Ai\OpenClaw\TranslationAgentPayloadBuilder;
 use App\Models\AiInvocation;
+use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
 
-it('dispatches github models requests through the copilot bridge', function () {
+it('dispatches github models translation through the copilot chat completions api', function () {
     config()->set('services.github_models', [
-        'base_url' => 'http://host.docker.internal:18643',
-        'api_key' => 'bridge-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
-        'retry_times' => 2,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     Http::fake([
-        'http://host.docker.internal:18643/v1/completions' => Http::response([
-            'content' => json_encode([
-                'translated_document' => [
-                    'text' => 'Ethylene prices rose.',
+        '*' => Http::response([
+            'id' => 'chatcmpl-test',
+            'model' => 'gpt-4o',
+            'choices' => [[
+                'index' => 0,
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => json_encode([
+                        'translated_document' => [
+                            'text' => 'Ethylene prices rose.',
+                        ],
+                        'glossary_hits' => [],
+                        'risk_flags' => [],
+                        'notes' => [],
+                        'meta' => [
+                            'schema_version' => 'v1',
+                            'provider_model' => 'gpt-4o',
+                        ],
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 ],
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => 'v1',
-                    'provider_model' => 'openai/gpt-5-mini',
-                ],
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'duration_ms' => 320,
-            'exit_code' => 0,
-            'model' => 'gpt-5-mini',
+                'finish_reason' => 'stop',
+            ]],
         ], 200),
     ]);
 
-    $client = app(GitHubModelsClient::class);
-
-    $response = $client->sendTranslationPayload([
+    $response = app(GitHubModelsClient::class)->sendTranslationPayload([
         'task_type' => 'translation',
         'task_subtype' => 'chemical_news',
         'input_document' => [
@@ -56,101 +60,80 @@ it('dispatches github models requests through the copilot bridge', function () {
         'output_schema_version' => 'v1',
     ]);
 
-    Http::assertSent(function (\Illuminate\Http\Client\Request $request): bool {
-        expect($request->url())->toBe('http://host.docker.internal:18643/v1/completions');
-        expect($request->header('Authorization'))->toContain('Bearer bridge-test-key');
-        expect($request['model'])->toBe('gpt-5-mini');
-        expect($request['timeout'])->toBe(45);
-        expect($request['prompt'])->toContain('"text":"乙烯价格上涨。"');
-        expect($request['prompt'])->toContain('"provider_model":"openai/gpt-5-mini"');
+    Http::assertSent(function (Request $request) {
+        $payload = $request->data();
+
+        expect($request->url())->toBe('https://api.githubcopilot.com/chat/completions');
+        expect($request->hasHeader('Authorization', 'Bearer copilot-api-test-key'))->toBeTrue();
+        expect($payload['model'])->toBe('gpt-4o');
+        expect($payload['stream'])->toBeFalse();
 
         return true;
     });
 
     expect(data_get($response, 'translated_document.text'))->toBe('Ethylene prices rose.');
-    expect(data_get($response, 'meta.provider_model'))->toBe('openai/gpt-5-mini');
+    expect(data_get($response, 'meta.provider_model'))->toBe('gpt-4o');
     expect(data_get($response, 'meta.retry_count'))->toBe(0);
-    expect(data_get($response, 'meta.bridge_duration_ms'))->toBe(320);
+    expect(data_get($response, 'meta.upstream_http_status'))->toBe(200);
 });
 
-it('surfaces copilot bridge failures for github models translation', function () {
+it('dispatches github models concurrent translation requests through the http pool client', function () {
     config()->set('services.github_models', [
-        'base_url' => 'http://host.docker.internal:18643',
-        'api_key' => 'bridge-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
-        'retry_times' => 0,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     Http::fake([
-        'http://host.docker.internal:18643/v1/completions' => Http::response([
-            'message' => 'Authentication failed.',
-        ], 502),
+        '*' => Http::sequence()
+            ->push([
+                'id' => 'chatcmpl-first',
+                'model' => 'gpt-4o',
+                'choices' => [[
+                    'index' => 0,
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => json_encode([
+                            'translated_document' => [
+                                'segment_0' => 'First segment',
+                            ],
+                            'glossary_hits' => [],
+                            'risk_flags' => [],
+                            'notes' => [],
+                            'meta' => [
+                                'schema_version' => 'v1',
+                                'provider_model' => 'gpt-4o',
+                            ],
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    ],
+                    'finish_reason' => 'stop',
+                ]],
+            ], 200)
+            ->push([
+                'id' => 'chatcmpl-second',
+                'model' => 'gpt-4o',
+                'choices' => [[
+                    'index' => 0,
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => json_encode([
+                            'translated_document' => [
+                                'segment_1' => 'Second segment',
+                            ],
+                            'glossary_hits' => [],
+                            'risk_flags' => [],
+                            'notes' => [],
+                            'meta' => [
+                                'schema_version' => 'v1',
+                                'provider_model' => 'gpt-4o',
+                            ],
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    ],
+                    'finish_reason' => 'stop',
+                ]],
+            ], 200),
     ]);
-
-    expect(fn () => app(GitHubModelsClient::class)->sendTranslationPayload([
-        'task_type' => 'translation',
-        'task_subtype' => 'chemical_news',
-        'input_document' => [
-            'text' => '乙烯价格上涨。',
-        ],
-        'context' => [
-            'source_lang' => 'zh',
-            'target_lang' => 'en',
-            'glossary_entries' => [],
-            'constraints' => [
-                'preserve_units' => true,
-                'preserve_entities' => true,
-            ],
-        ],
-        'output_schema_version' => 'v1',
-    ]))->toThrow(RuntimeException::class, 'Authentication failed.');
-});
-
-it('serializes github models concurrent translation through repeated copilot bridge calls', function () {
-    config()->set('services.github_models', [
-        'base_url' => 'http://host.docker.internal:18643',
-        'api_key' => 'bridge-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
-        'retry_times' => 0,
-    ]);
-
-    Http::fakeSequence()
-        ->push([
-            'content' => json_encode([
-                'translated_document' => [
-                    'segment_0' => 'First segment',
-                ],
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => 'v1',
-                    'provider_model' => 'openai/gpt-5-mini',
-                ],
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'duration_ms' => 210,
-            'exit_code' => 0,
-            'model' => 'gpt-5-mini',
-        ], 200)
-        ->push([
-            'content' => json_encode([
-                'translated_document' => [
-                    'segment_1' => 'Second segment',
-                ],
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => 'v1',
-                    'provider_model' => 'openai/gpt-5-mini',
-                ],
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'duration_ms' => 220,
-            'exit_code' => 0,
-            'model' => 'gpt-5-mini',
-        ], 200);
 
     $results = app(GitHubModelsClient::class)->sendTranslationPayloadsConcurrently([
         [
@@ -193,11 +176,84 @@ it('serializes github models concurrent translation through repeated copilot bri
         ],
     ], 2);
 
+    Http::assertSentCount(2);
+    Http::assertSent(function (Request $request) {
+        expect($request->url())->toBe('https://api.githubcopilot.com/chat/completions');
+        expect(data_get($request->data(), 'model'))->toBe('gpt-4o');
+
+        return true;
+    });
+
     expect(data_get($results, '0.response.translated_document.segment_0'))->toBe('First segment');
     expect(data_get($results, '1.response.translated_document.segment_1'))->toBe('Second segment');
     expect(data_get($results, '0.response.meta.retry_count'))->toBe(0);
     expect(data_get($results, '1.response.meta.retry_count'))->toBe(0);
+});
+
+it('retries github models single translation requests after 429 responses', function () {
+    config()->set('services.github_models', [
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
+        'retry_times' => 1,
+    ]);
+
+    Http::fake([
+        '*' => Http::sequence()
+            ->push([
+                'error' => [
+                    'message' => 'rate limit',
+                ],
+            ], 429, [
+                'Retry-After' => '0',
+            ])
+            ->push([
+                'id' => 'chatcmpl-retry',
+                'model' => 'gpt-4o',
+                'choices' => [[
+                    'index' => 0,
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => json_encode([
+                            'translated_document' => [
+                                'text' => 'Ethylene prices rose.',
+                            ],
+                            'glossary_hits' => [],
+                            'risk_flags' => [],
+                            'notes' => [],
+                            'meta' => [
+                                'schema_version' => 'v1',
+                                'provider_model' => 'gpt-4o',
+                            ],
+                        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    ],
+                    'finish_reason' => 'stop',
+                ]],
+            ], 200),
+    ]);
+
+    $response = app(GitHubModelsClient::class)->sendTranslationPayload([
+        'task_type' => 'translation',
+        'task_subtype' => 'chemical_news',
+        'input_document' => [
+            'text' => '乙烯价格上涨。',
+        ],
+        'context' => [
+            'source_lang' => 'zh',
+            'target_lang' => 'en',
+            'glossary_entries' => [],
+            'constraints' => [
+                'preserve_units' => true,
+                'preserve_entities' => true,
+            ],
+        ],
+        'output_schema_version' => 'v1',
+    ]);
+
     Http::assertSentCount(2);
+    expect(data_get($response, 'translated_document.text'))->toBe('Ethylene prices rose.');
+    expect(data_get($response, 'meta.retry_count'))->toBe(1);
 });
 
 it('routes github models concurrent translation through the batch client instead of serial single calls', function () {
@@ -218,7 +274,7 @@ it('routes github models concurrent translation through the batch client instead
                     'notes' => [],
                     'meta' => [
                         'schema_version' => 'v1',
-                        'provider_model' => 'openai/gpt-5-mini',
+                        'provider_model' => 'gpt-4o',
                         'retry_count' => 0,
                     ],
                 ],
@@ -233,7 +289,7 @@ it('routes github models concurrent translation through the batch client instead
                     'notes' => [],
                     'meta' => [
                         'schema_version' => 'v1',
-                        'provider_model' => 'openai/gpt-5-mini',
+                        'provider_model' => 'gpt-4o',
                         'retry_count' => 0,
                     ],
                 ],
@@ -289,8 +345,10 @@ it('routes github models concurrent translation through the batch client instead
                 'output_schema_version' => 'v1',
             ],
         ],
-    ], 2);
+    ], 2, false, true);
 
     expect(data_get($results, '0.response.translated_document.segment_0'))->toBe('First segment');
     expect(data_get($results, '1.response.translated_document.segment_1'))->toBe('Second segment');
+    expect(data_get($results, '0.response.meta.provider_dispatch_mode'))->toBe('bounded_concurrent');
+    expect(data_get($results, '1.response.meta.provider_dispatch_mode'))->toBe('bounded_concurrent');
 });

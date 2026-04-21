@@ -11,10 +11,10 @@ it('uses the github models provider for sync short text even when the admin sett
     Cache::flush();
 
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     SystemSetting::query()->create([
@@ -41,7 +41,7 @@ it('uses the github models provider for sync short text even when the admin sett
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
-                'provider_model' => 'openai/gpt-5-mini',
+                'provider_model' => 'gpt-4o',
             ],
         ]);
 
@@ -59,10 +59,10 @@ it('uses the github models provider for sync short text even when the admin sett
     $response
         ->assertOk()
         ->assertJsonPath('translated_document.text', 'Ethylene prices rose.')
-        ->assertJsonPath('meta.provider_model', 'openai/gpt-5-mini');
+        ->assertJsonPath('meta.provider_model', 'gpt-4o');
 
     $this->assertDatabaseHas('ai_invocations', [
-        'agent_name' => 'openai/gpt-5-mini',
+        'agent_name' => 'gpt-4o',
         'status' => 'succeeded',
     ]);
 });

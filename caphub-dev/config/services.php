@@ -57,9 +57,9 @@ return [
     ],
 
     'github_models' => [
-        'base_url' => env('GITHUB_MODELS_BASE_URL', 'http://host.docker.internal:18643'),
-        'api_key' => env('GITHUB_MODELS_BRIDGE_API_KEY', env('GITHUB_MODELS_API_KEY')),
-        'model' => env('GITHUB_MODELS_MODEL', 'openai/gpt-5-mini'),
+        'base_url' => env('GITHUB_MODELS_BASE_URL', 'https://api.githubcopilot.com'),
+        'api_key' => env('GITHUB_COPILOT_API_KEY'),
+        'model' => env('GITHUB_MODELS_MODEL', 'gpt-4o'),
         'timeout' => (int) env('GITHUB_MODELS_TIMEOUT', 120),
         'retry_times' => (int) env('GITHUB_MODELS_RETRY_TIMES', 2),
         'html_parallelism' => (int) env('GITHUB_MODELS_HTML_PARALLELISM', 1),

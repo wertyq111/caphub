@@ -14,10 +14,10 @@ it('caches identical sync translation requests and persists the first response',
     Cache::flush();
 
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     $glossary = Glossary::query()->create([
@@ -106,10 +106,10 @@ it('reuses the same sync cache entry for short text even after switching the lon
     ]);
 
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     $mockClient = Mockery::mock(GitHubModelsClient::class);
@@ -125,7 +125,7 @@ it('reuses the same sync cache entry for short text even after switching the lon
             'notes' => [],
             'meta' => [
                 'schema_version' => 'v1',
-                'provider_model' => 'openai/gpt-5-mini',
+                'provider_model' => 'gpt-4o',
             ],
         ]);
 
@@ -155,6 +155,6 @@ it('reuses the same sync cache entry for short text even after switching the lon
         ->assertOk()
         ->assertJsonPath('translated_document.text', 'GitHub Models translation.')
         ->assertJsonPath('meta.cache_hit', true)
-        ->assertJsonPath('meta.provider_model', 'openai/gpt-5-mini');
+        ->assertJsonPath('meta.provider_model', 'gpt-4o');
 
 });

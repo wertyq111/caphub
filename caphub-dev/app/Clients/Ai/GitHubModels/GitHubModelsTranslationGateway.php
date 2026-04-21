@@ -156,7 +156,7 @@ class GitHubModelsTranslationGateway
 
     public function timeout(): int
     {
-        return max(1, (int) config('services.github_models.timeout', 45));
+        return max(1, (int) config('services.github_models.timeout', 120));
     }
 
     public function htmlParallelism(): int
@@ -166,7 +166,7 @@ class GitHubModelsTranslationGateway
 
     public function translationAgent(): string
     {
-        return (string) config('services.github_models.model', 'openai/gpt-5-mini');
+        return (string) config('services.github_models.model', 'gpt-4o');
     }
 
     protected function durationInMs(float $startedAt): int

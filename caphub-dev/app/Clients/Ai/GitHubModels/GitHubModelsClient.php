@@ -4,6 +4,7 @@ namespace App\Clients\Ai\GitHubModels;
 
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\PendingRequest;
+use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\RequestException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -16,6 +17,8 @@ class GitHubModelsClient
 
     protected const RETRYABLE_STATUS_CODES = [429, 502, 503, 504];
 
+    protected const DEFAULT_RETRY_TIMES = 2;
+
     /**
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
@@ -25,9 +28,7 @@ class GitHubModelsClient
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
-        $requestPayload = $this->bridgeRequestPayload(
-            $this->translationPrompt($payload, $allowPartialTranslatedDocument),
-        );
+        $requestPayload = $this->openAiRequestPayload($payload, $allowPartialTranslatedDocument);
         $attempt = 0;
         $maxAttempts = $this->retryTimes() + 1;
         $lastException = null;
@@ -35,15 +36,13 @@ class GitHubModelsClient
         while ($attempt < $maxAttempts) {
             try {
                 $response = $this->request()
-                    ->post($this->completionPath(), $requestPayload)
+                    ->post('/chat/completions', $requestPayload)
                     ->throw();
 
                 return $this->withRetryCount(
                     $this->attachTransportMeta(
                         $this->validateTranslationResponse(
-                            $this->decodeJsonFromText(
-                                $this->extractCompletionContent($response->json() ?? []),
-                            ),
+                            $this->normalizeResponsePayload($response->json() ?? []),
                             $payload,
                             $enforceTargetLanguage,
                             $allowPartialTranslatedDocument,
@@ -56,13 +55,15 @@ class GitHubModelsClient
                 $lastException = $this->normalizeException($throwable);
                 $attempt++;
 
-                if (! $this->shouldRetryAfter($throwable) || $attempt >= $maxAttempts) {
+                if (! $this->shouldRetryAfter($throwable, $attempt, $maxAttempts)) {
                     throw $lastException;
                 }
+
+                usleep($this->retryDelayInMicroseconds($throwable, $attempt));
             }
         }
 
-        throw $lastException ?? new RuntimeException('Copilot bridge translation request failed.');
+        throw $lastException ?? new RuntimeException('GitHub Copilot translation request failed.');
     }
 
     /**
@@ -79,20 +80,76 @@ class GitHubModelsClient
             return [];
         }
 
-        $results = [];
+        $descriptors = [];
 
         foreach ($requests as $key => $request) {
+            $payload = (array) ($request['payload'] ?? []);
+
+            $descriptors[$key] = [
+                'payload' => $payload,
+                'request_payload' => $this->openAiRequestPayload(
+                    $payload,
+                    (bool) ($request['allow_partial_translated_document'] ?? false),
+                ),
+                'enforce_target_language' => (bool) ($request['enforce_target_language'] ?? true),
+                'allow_partial_translated_document' => (bool) ($request['allow_partial_translated_document'] ?? false),
+            ];
+        }
+
+        if ($concurrency <= 1) {
+            $results = [];
+
+            foreach ($descriptors as $key => $descriptor) {
+                try {
+                    $results[$key] = [
+                        'response' => $this->sendTranslationPayload(
+                            $descriptor['payload'],
+                            $descriptor['enforce_target_language'],
+                            $descriptor['allow_partial_translated_document'],
+                        ),
+                    ];
+                } catch (Throwable $throwable) {
+                    $results[$key] = [
+                        'exception' => $this->normalizeException($throwable),
+                    ];
+                }
+            }
+
+            return $results;
+        }
+
+        $responses = $this->dispatchConcurrentRequests($descriptors, $concurrency);
+        $results = [];
+
+        foreach ($descriptors as $key => $descriptor) {
+            $response = $responses[(string) $key] ?? $responses[$key] ?? null;
+
             try {
+                if ($response instanceof Throwable) {
+                    throw $response;
+                }
+
+                if (! $response instanceof Response) {
+                    throw new RuntimeException('GitHub Copilot concurrent translation request did not return a response.');
+                }
+
                 $results[$key] = [
-                    'response' => $this->sendTranslationPayload(
-                        (array) ($request['payload'] ?? []),
-                        (bool) ($request['enforce_target_language'] ?? true),
-                        (bool) ($request['allow_partial_translated_document'] ?? false),
+                    'response' => $this->withRetryCount(
+                        $this->attachTransportMeta(
+                            $this->validateTranslationResponse(
+                                $this->normalizeResponsePayload($response->throw()->json() ?? []),
+                                $descriptor['payload'],
+                                $descriptor['enforce_target_language'],
+                                $descriptor['allow_partial_translated_document'],
+                            ),
+                            $response,
+                        ),
+                        0,
                     ),
                 ];
             } catch (Throwable $throwable) {
                 $results[$key] = [
-                    'exception' => $this->toRuntimeException($throwable),
+                    'exception' => $this->normalizeException($throwable),
                 ];
             }
         }
@@ -100,10 +157,94 @@ class GitHubModelsClient
         return $results;
     }
 
+    protected function request(): PendingRequest
+    {
+        return Http::baseUrl($this->baseUrl())
+            ->acceptJson()
+            ->asJson()
+            ->timeout($this->timeout())
+            ->withToken($this->apiKey());
+    }
+
+    /**
+     * @param  array<array-key, array{request_payload: array<string, mixed>}>  $descriptors
+     * @return array<array-key, Response|Throwable>
+     */
+    protected function dispatchConcurrentRequests(array $descriptors, int $concurrency): array
+    {
+        $translationUrl = $this->baseUrl().'/chat/completions';
+        $apiKey = $this->apiKey();
+        $timeout = $this->timeout();
+
+        return Http::pool(function (Pool $pool) use ($descriptors, $translationUrl, $apiKey, $timeout): void {
+            foreach ($descriptors as $key => $descriptor) {
+                $pool->as((string) $key)
+                    ->acceptJson()
+                    ->asJson()
+                    ->timeout($timeout)
+                    ->withToken($apiKey)
+                    ->post($translationUrl, $descriptor['request_payload']);
+            }
+        }, max(1, $concurrency));
+    }
+
+    protected function baseUrl(): string
+    {
+        $baseUrl = trim((string) config('services.github_models.base_url', ''));
+
+        if ($baseUrl === '') {
+            throw new RuntimeException('GitHub Copilot base URL is not configured.');
+        }
+
+        return rtrim($baseUrl, '/');
+    }
+
+    protected function apiKey(): string
+    {
+        $apiKey = trim((string) config('services.github_models.api_key', ''));
+
+        if ($apiKey === '') {
+            throw new RuntimeException('GitHub Copilot API key is not configured.');
+        }
+
+        return $apiKey;
+    }
+
+    protected function timeout(): int
+    {
+        return max(1, (int) config('services.github_models.timeout', 120));
+    }
+
+    protected function retryTimes(): int
+    {
+        return max(0, (int) config('services.github_models.retry_times', self::DEFAULT_RETRY_TIMES));
+    }
+
+    protected function providerModel(): string
+    {
+        $model = trim((string) config('services.github_models.model', 'gpt-4o'));
+
+        if ($model === '') {
+            throw new RuntimeException('GitHub Copilot model is not configured.');
+        }
+
+        return $model;
+    }
+
+    protected function withRetryCount(array $response, int $retryCount): array
+    {
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
+            'retry_count' => max(0, $retryCount),
+        ]);
+
+        return $response;
+    }
+
     /**
      * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
      */
-    protected function translationPrompt(array $payload, bool $allowPartialTranslatedDocument): string
+    protected function openAiRequestPayload(array $payload, bool $allowPartialTranslatedDocument): array
     {
         $documentKeys = array_keys((array) ($payload['input_document'] ?? []));
         $translatedDocumentSchema = [];
@@ -122,7 +263,7 @@ class GitHubModelsClient
             'Translate every input_document value fully into the target language.',
             'When target_lang is English, translated_document must not contain any Chinese characters.',
             'Do not leave partial source-language fragments in the translation output.',
-            'Return strict JSON only without markdown or explanation.',
+            'Return strict JSON only without markdown.',
         ];
 
         if ($allowPartialTranslatedDocument) {
@@ -149,189 +290,59 @@ class GitHubModelsClient
             $instructions[] = 'Placeholder tokens: '.implode(', ', $preservePlaceholders);
         }
 
-        $instructions[] = 'Payload to translate:';
-        $instructions[] = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-        return implode("\n", $instructions);
-    }
-
-    /**
-     * @param  string  $prompt
-     * @return array<string, mixed>
-     */
-    protected function bridgeRequestPayload(string $prompt): array
-    {
         return [
-            'model' => $this->copilotModel(),
-            'prompt' => $prompt,
-            'timeout' => $this->timeout(),
+            'model' => $this->providerModel(),
+            'stream' => false,
+            'messages' => [
+                [
+                    'role' => 'system',
+                    'content' => implode("\n", $instructions),
+                ],
+                [
+                    'role' => 'user',
+                    'content' => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ],
+            ],
         ];
     }
 
-    protected function request(): PendingRequest
-    {
-        return Http::baseUrl($this->baseUrl())
-            ->acceptJson()
-            ->asJson()
-            ->timeout($this->timeout())
-            ->withToken($this->apiKey());
-    }
-
-    protected function completionPath(): string
-    {
-        return '/v1/completions';
-    }
-
-    protected function baseUrl(): string
-    {
-        $baseUrl = trim((string) config('services.github_models.base_url', ''));
-
-        if ($baseUrl === '') {
-            throw new RuntimeException('Copilot bridge base URL is not configured.');
-        }
-
-        return rtrim($baseUrl, '/');
-    }
-
-    protected function apiKey(): string
-    {
-        $apiKey = trim((string) config('services.github_models.api_key', ''));
-
-        if ($apiKey === '') {
-            throw new RuntimeException('Copilot bridge API key is not configured.');
-        }
-
-        return $apiKey;
-    }
-
-    protected function timeout(): int
-    {
-        return max(1, (int) config('services.github_models.timeout', 120));
-    }
-
-    protected function retryTimes(): int
-    {
-        return max(0, (int) config('services.github_models.retry_times', 0));
-    }
-
-    protected function providerModel(): string
-    {
-        $model = trim((string) config('services.github_models.model', 'openai/gpt-5-mini'));
-
-        if ($model === '') {
-            throw new RuntimeException('GitHub Models model is not configured.');
-        }
-
-        return $model;
-    }
-
-    protected function copilotModel(): string
-    {
-        $model = $this->providerModel();
-
-        if (str_starts_with($model, 'openai/')) {
-            return substr($model, strlen('openai/')) ?: $model;
-        }
-
-        return $model;
-    }
-
-    protected function withRetryCount(array $response, int $retryCount): array
-    {
-        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
-            'retry_count' => max(0, $retryCount),
-        ]);
-
-        return $response;
-    }
-
     /**
-     * @param  array<string, mixed>  $response
-     * @return string
-     */
-    protected function extractCompletionContent(array $response): string
-    {
-        $content = data_get($response, 'content');
-
-        if (! is_string($content) || trim($content) === '') {
-            throw new RuntimeException('Copilot bridge completion content is empty.');
-        }
-
-        return $content;
-    }
-
-    /**
-     * @param  array<string, mixed>  $response
+     * @param  mixed  $response
      * @return array<string, mixed>
      */
-    protected function attachTransportMeta(array $response, Response $httpResponse): array
+    protected function normalizeResponsePayload(mixed $response): array
     {
-        $stats = $httpResponse->handlerStats();
-
-        $response['meta'] = array_merge((array) ($response['meta'] ?? []), array_filter([
-            'upstream_http_status' => $httpResponse->status(),
-            'upstream_connect_time_ms' => $this->handlerStatMillis($stats, 'connect_time'),
-            'upstream_starttransfer_time_ms' => $this->handlerStatMillis($stats, 'starttransfer_time'),
-            'upstream_total_time_ms' => $this->handlerStatMillis($stats, 'total_time'),
-            'bridge_duration_ms' => is_numeric(data_get($httpResponse->json() ?? [], 'duration_ms'))
-                ? (int) data_get($httpResponse->json() ?? [], 'duration_ms')
-                : null,
-        ], static fn (mixed $value): bool => $value !== null));
-
-        return $response;
-    }
-
-    /**
-     * @param  array<string, mixed>  $stats
-     */
-    protected function handlerStatMillis(array $stats, string $key): ?int
-    {
-        $value = $stats[$key] ?? null;
-
-        if (! is_numeric($value)) {
-            return null;
+        if (! is_array($response)) {
+            throw new RuntimeException('GitHub Copilot response payload must be a JSON object.');
         }
 
-        return (int) round(((float) $value) * 1000);
-    }
-
-    protected function shouldRetryAfter(Throwable $throwable): bool
-    {
-        if ($throwable instanceof ConnectionException) {
-            return true;
+        if (array_key_exists('translated_document', $response)) {
+            return $response;
         }
 
-        if ($throwable instanceof RequestException) {
-            return in_array($throwable->response?->status(), self::RETRYABLE_STATUS_CODES, true);
+        $content = (string) data_get($response, 'choices.0.message.content', '');
+        $decoded = $this->decodeJsonFromText($content);
+
+        if (! is_array($decoded)) {
+            throw new RuntimeException('GitHub Copilot completion content must be a JSON object.');
         }
 
-        return false;
-    }
+        $translatedDocument = data_get($decoded, 'translated_document');
 
-    protected function normalizeException(Throwable $throwable): RuntimeException
-    {
-        if ($throwable instanceof RequestException) {
-            $message = trim((string) data_get($throwable->response?->json() ?? [], 'message', ''));
-
-            if ($message !== '') {
-                return new RuntimeException($message, (int) ($throwable->response?->status() ?? 0), $throwable);
-            }
+        if (! is_array($translatedDocument)) {
+            throw new RuntimeException('GitHub Copilot completion content is missing [translated_document].');
         }
 
-        if ($throwable instanceof ConnectionException) {
-            return new RuntimeException('Copilot bridge connection failed: '.$throwable->getMessage(), 0, $throwable);
-        }
-
-        return $this->toRuntimeException($throwable);
-    }
-
-    protected function toRuntimeException(Throwable $throwable): RuntimeException
-    {
-        if ($throwable instanceof RuntimeException) {
-            return $throwable;
-        }
-
-        return new RuntimeException($throwable->getMessage(), (int) $throwable->getCode(), $throwable);
+        return [
+            'translated_document' => $translatedDocument,
+            'glossary_hits' => is_array(data_get($decoded, 'glossary_hits')) ? data_get($decoded, 'glossary_hits') : [],
+            'risk_flags' => is_array(data_get($decoded, 'risk_flags')) ? data_get($decoded, 'risk_flags') : [],
+            'notes' => is_array(data_get($decoded, 'notes')) ? data_get($decoded, 'notes') : [],
+            'meta' => [
+                'schema_version' => data_get($decoded, 'meta.schema_version', self::OUTPUT_SCHEMA_VERSION),
+                'provider_model' => data_get($decoded, 'meta.provider_model', data_get($response, 'model', $this->providerModel())),
+            ],
+        ];
     }
 
     /**
@@ -343,7 +354,7 @@ class GitHubModelsClient
         $trimmed = trim($text);
 
         if ($trimmed === '') {
-            throw new RuntimeException('Copilot bridge completion content is empty.');
+            throw new RuntimeException('GitHub Copilot completion content is empty.');
         }
 
         if (str_starts_with($trimmed, '```')) {
@@ -373,7 +384,7 @@ class GitHubModelsClient
         }
 
         if (! is_array($decoded)) {
-            throw new RuntimeException('Copilot bridge completion content is not valid JSON.');
+            throw new RuntimeException('GitHub Copilot completion content is not valid JSON.');
         }
 
         return $decoded;
@@ -385,14 +396,18 @@ class GitHubModelsClient
      * @return array<string, mixed>
      */
     protected function validateTranslationResponse(
-        array $response,
+        mixed $response,
         array $payload,
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
+        if (! is_array($response)) {
+            throw new RuntimeException('GitHub Copilot response payload must be a JSON object.');
+        }
+
         foreach (['translated_document', 'glossary_hits', 'risk_flags', 'notes', 'meta'] as $key) {
             if (! array_key_exists($key, $response)) {
-                throw new RuntimeException(sprintf('Copilot bridge response payload is missing required key [%s].', $key));
+                throw new RuntimeException(sprintf('GitHub Copilot response payload is missing required key [%s].', $key));
             }
         }
 
@@ -401,11 +416,11 @@ class GitHubModelsClient
             || ! is_array($response['risk_flags'])
             || ! is_array($response['notes'])
             || ! is_array($response['meta'])) {
-            throw new RuntimeException('Copilot bridge response payload has an invalid schema.');
+            throw new RuntimeException('GitHub Copilot response payload has an invalid schema.');
         }
 
         if (! array_key_exists('schema_version', $response['meta'])) {
-            throw new RuntimeException('Copilot bridge response meta is missing [schema_version].');
+            throw new RuntimeException('GitHub Copilot response meta is missing [schema_version].');
         }
 
         foreach (array_keys((array) ($payload['input_document'] ?? [])) as $key) {
@@ -414,11 +429,11 @@ class GitHubModelsClient
                     continue;
                 }
 
-                throw new RuntimeException(sprintf('Copilot bridge translated_document is missing required key [%s].', $key));
+                throw new RuntimeException(sprintf('GitHub Copilot translated_document is missing required key [%s].', $key));
             }
 
             if (! is_string($response['translated_document'][$key])) {
-                throw new RuntimeException(sprintf('Copilot bridge translated_document key [%s] must be a string.', $key));
+                throw new RuntimeException(sprintf('GitHub Copilot translated_document key [%s] must be a string.', $key));
             }
         }
 
@@ -430,6 +445,38 @@ class GitHubModelsClient
         }
 
         return $response;
+    }
+
+    /**
+     * @param  array<string, mixed>  $response
+     * @return array<string, mixed>
+     */
+    protected function attachTransportMeta(array $response, Response $httpResponse): array
+    {
+        $stats = $httpResponse->handlerStats();
+
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), array_filter([
+            'upstream_http_status' => $httpResponse->status(),
+            'upstream_connect_time_ms' => $this->handlerStatMillis($stats, 'connect_time'),
+            'upstream_starttransfer_time_ms' => $this->handlerStatMillis($stats, 'starttransfer_time'),
+            'upstream_total_time_ms' => $this->handlerStatMillis($stats, 'total_time'),
+        ], static fn (mixed $value): bool => $value !== null));
+
+        return $response;
+    }
+
+    /**
+     * @param  array<string, mixed>  $stats
+     */
+    protected function handlerStatMillis(array $stats, string $key): ?int
+    {
+        $value = $stats[$key] ?? null;
+
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        return (int) round(((float) $value) * 1000);
     }
 
     /**
@@ -447,7 +494,7 @@ class GitHubModelsClient
             }
 
             throw new RuntimeException(sprintf(
-                'Copilot bridge translated_document key [%s] contains Chinese characters for English target output.',
+                'GitHub Copilot translated_document key [%s] contains Chinese characters for English target output.',
                 $key,
             ));
         }
@@ -463,5 +510,64 @@ class GitHubModelsClient
     protected function containsChineseCharacters(string $value): bool
     {
         return preg_match('/\p{Han}/u', $value) === 1;
+    }
+
+    protected function normalizeException(Throwable $throwable): RuntimeException
+    {
+        $exception = $this->toRuntimeException($throwable);
+
+        if ($this->isTransientUpstreamFailure($throwable)) {
+            return new RuntimeException('upstream_timeout: '.$exception->getMessage(), (int) $exception->getCode(), $throwable);
+        }
+
+        return $exception;
+    }
+
+    protected function toRuntimeException(Throwable $throwable): RuntimeException
+    {
+        if ($throwable instanceof RuntimeException) {
+            return $throwable;
+        }
+
+        return new RuntimeException($throwable->getMessage(), (int) $throwable->getCode(), $throwable);
+    }
+
+    protected function isTransientUpstreamFailure(Throwable $throwable): bool
+    {
+        if ($throwable instanceof ConnectionException) {
+            return str_contains(strtolower($throwable->getMessage()), 'curl error 28');
+        }
+
+        if ($throwable instanceof RequestException) {
+            return in_array($throwable->response?->status(), self::RETRYABLE_STATUS_CODES, true);
+        }
+
+        return false;
+    }
+
+    protected function shouldRetryAfter(Throwable $throwable, int $attempt, int $maxAttempts): bool
+    {
+        return $attempt < $maxAttempts && $this->isTransientUpstreamFailure($throwable);
+    }
+
+    protected function retryDelayInMicroseconds(Throwable $throwable, int $attempt): int
+    {
+        if ($throwable instanceof RequestException) {
+            $retryAfter = $throwable->response?->header('Retry-After');
+
+            if (is_string($retryAfter) && $retryAfter !== '') {
+                if (ctype_digit($retryAfter)) {
+                    return max(0, (int) $retryAfter) * 1_000_000;
+                }
+
+                $retryAt = strtotime($retryAfter);
+
+                if ($retryAt !== false) {
+                    return max(0, $retryAt - time()) * 1_000_000;
+                }
+            }
+        }
+
+        return max(1, min(5, $attempt * 2)) * 1_000_000;
     }
 }

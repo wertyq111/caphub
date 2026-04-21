@@ -9,10 +9,10 @@ uses(RefreshDatabase::class);
 
 it('returns a translated text document for the sync translation endpoint', function () {
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     $mockClient = Mockery::mock(GitHubModelsClient::class);
@@ -51,7 +51,7 @@ it('returns a translated text document for the sync translation endpoint', funct
 
     $this->assertDatabaseHas('ai_invocations', [
         'job_id' => $job->id,
-        'agent_name' => 'openai/gpt-5-mini',
+        'agent_name' => 'gpt-4o',
         'status' => 'succeeded',
     ]);
 });
@@ -73,10 +73,10 @@ it('rejects mismatched content for plain text input', function () {
 
 it('returns a stable json error when the upstream translation call fails', function () {
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     $mockClient = Mockery::mock(GitHubModelsClient::class);
@@ -108,17 +108,17 @@ it('returns a stable json error when the upstream translation call fails', funct
 
     $this->assertDatabaseHas('ai_invocations', [
         'job_id' => $job->id,
-        'agent_name' => 'openai/gpt-5-mini',
+        'agent_name' => 'gpt-4o',
         'status' => 'failed',
     ]);
 });
 
 it('records sync job timing around the upstream translation call', function () {
     config()->set('services.github_models', [
-        'base_url' => 'https://models.github.ai/inference',
-        'api_key' => 'github-models-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     $startedAt = Carbon::parse('2026-04-14 10:00:00');
@@ -169,29 +169,35 @@ it('records sync job timing around the upstream translation call', function () {
 
 it('rejects translated content that still contains chinese when target language is english', function () {
     config()->set('services.github_models', [
-        'base_url' => 'http://host.docker.internal:18643',
-        'api_key' => 'bridge-test-key',
-        'model' => 'openai/gpt-5-mini',
-        'timeout' => 45,
+        'base_url' => 'https://api.githubcopilot.com',
+        'api_key' => 'copilot-api-test-key',
+        'model' => 'gpt-4o',
+        'timeout' => 120,
     ]);
 
     Http::fake([
-        'http://host.docker.internal:18643/v1/completions' => Http::response([
-            'content' => json_encode([
-                'translated_document' => [
-                    'text' => 'Ethylene prices 价格 rose.',
+        'https://api.githubcopilot.com/chat/completions' => Http::response([
+            'id' => 'chatcmpl-test',
+            'model' => 'gpt-4o',
+            'choices' => [[
+                'index' => 0,
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => json_encode([
+                        'translated_document' => [
+                            'text' => 'Ethylene prices 价格 rose.',
+                        ],
+                        'glossary_hits' => [],
+                        'risk_flags' => [],
+                        'notes' => [],
+                        'meta' => [
+                            'schema_version' => 'v1',
+                            'provider_model' => 'gpt-4o',
+                        ],
+                    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
                 ],
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => 'v1',
-                    'provider_model' => 'openai/gpt-5-mini',
-                ],
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'duration_ms' => 250,
-            'exit_code' => 0,
-            'model' => 'gpt-5-mini',
+                'finish_reason' => 'stop',
+            ]],
         ], 200),
     ]);
 
