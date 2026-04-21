@@ -110,7 +110,7 @@ function goToResult() {
       <div class="flex items-center gap-3">
         <span class="np-dot-pulse h-2 w-2 rounded-full bg-[var(--np-primary)] text-[var(--np-primary)]" />
         <span class="np-font-mono text-xs font-medium uppercase tracking-[0.2em] text-[var(--np-primary)]" style="opacity: 0.7;">
-          Job Tracking
+          任务追踪
         </span>
         <span class="text-xs text-[var(--np-on-surface-variant)]">任务轮询 · 状态追踪 · 结果入口</span>
       </div>
@@ -146,13 +146,13 @@ function goToResult() {
             <div class="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
-                  Job Summary
+                  任务概览
                 </p>
                 <h2 class="mt-2 np-font-display text-xl font-semibold text-[var(--np-on-surface)]">
                   任务概览
                 </h2>
                 <p class="mt-2 break-all text-sm text-[var(--np-on-surface-variant)]">
-                  Job UUID: {{ jobId }}
+                  任务 UUID：{{ jobId }}
                 </p>
               </div>
 
@@ -191,7 +191,7 @@ function goToResult() {
         <aside class="space-y-4">
           <section class="rounded-[var(--np-radius-xl)] np-glass-feature p-4">
             <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
-              Live Status
+              实时状态
             </p>
             <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">实时状态说明</h2>
             <p class="mt-3 text-sm leading-6 text-[var(--np-on-surface-variant)]">
@@ -207,7 +207,7 @@ function goToResult() {
             class="rounded-[var(--np-radius-xl)] border border-rose-300/20 bg-[rgba(251,113,133,0.08)] p-4"
           >
             <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-rose-200" style="opacity: 0.8;">
-              Failure Reason
+              失败原因
             </p>
             <h2 class="mt-2 np-font-display text-lg font-semibold text-rose-100">失败原因</h2>
             <p class="mt-3 text-sm leading-6 text-rose-100/85">
@@ -217,7 +217,7 @@ function goToResult() {
 
           <section class="rounded-[var(--np-radius-xl)] np-glass-strong p-4">
             <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
-              Next Step
+              下一步
             </p>
             <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">下一步操作</h2>
             <div class="mt-4 flex flex-col gap-3">

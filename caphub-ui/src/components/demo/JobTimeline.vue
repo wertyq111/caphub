@@ -14,6 +14,8 @@ const stageLabels = {
   queued: '排队中',
   processing: '翻译处理中',
   succeeded: '已完成',
+  failed: '处理中断',
+  cancelled: '流程取消',
 };
 const statusToStageIndex = {
   pending: 0,
@@ -66,7 +68,7 @@ const progressLabel = computed(() => {
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
         <p class="np-font-mono text-[11px] font-medium uppercase tracking-[0.28em] text-[var(--np-primary)]" style="opacity: 0.7;">
-          Task Timeline
+          任务时间线
         </p>
         <h2 class="mt-2 np-font-display text-lg font-semibold text-[var(--np-on-surface)]">
           任务处理时间线
