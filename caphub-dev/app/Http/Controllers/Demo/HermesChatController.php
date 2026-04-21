@@ -3,13 +3,17 @@
 namespace App\Http\Controllers\Demo;
 
 use App\Http\Controllers\Controller;
+use App\Services\Chat\CaphubProjectKnowledge;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
-use RuntimeException;
 
 class HermesChatController extends Controller
 {
+    public function __construct(
+        protected CaphubProjectKnowledge $projectKnowledge,
+    ) {}
+
     public function __invoke(Request $request): JsonResponse
     {
         $request->validate([
@@ -34,16 +38,20 @@ class HermesChatController extends Controller
         $modelInfo = $this->fetchAvailableModels($apiKey, $timeout);
 
         $systemPrompt = implode("\n", [
-            'You are CapHub Neural Link, an AI assistant for the CapHub chemical translation platform.',
-            'You help users understand translation capabilities, agent status, and system operations.',
+            'You are CapHub Neural Link, the resident assistant for the CapHub workspace.',
+            'You help users understand website features, translation capabilities, agent status, and system operations.',
             'Respond concisely in the same language as the user message.',
             'If asked about translation, guide users to use the translation workbench at /demo/translate.',
-            'You can discuss chemical industry terminology, translation quality, and system status.',
+            'Use the embedded project knowledge as your source of truth before answering.',
+            'You can discuss chemical industry terminology, translation quality, project structure, and system status.',
             '',
             '## Available Models/Agents on this platform:',
             $modelInfo,
             '',
             'When users ask about available models, respond with the actual model list above.',
+            '',
+            '## CapHub Project Knowledge:',
+            $this->projectKnowledge->build(),
         ]);
 
         $messages = [
@@ -104,7 +112,9 @@ class HermesChatController extends Controller
 
         foreach ($endpoints as $ep) {
             $url = trim((string) $ep['url']);
-            if ($url === '') continue;
+            if ($url === '') {
+                continue;
+            }
 
             // Strip trailing /v1 or /v1/ if present to avoid double-path
             $url = preg_replace('#/v1/?$#', '', rtrim($url, '/'));
