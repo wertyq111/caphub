@@ -7,6 +7,9 @@ import { sendChatMessage } from '../../api/dashboard';
 const auth = useAuthStore();
 const input = ref('');
 const sending = ref(false);
+const HISTORY_LIMIT = 6;
+const HISTORY_CONTENT_LIMIT = 1200;
+const DEFAULT_ERROR_MESSAGE = '对话助手响应超时或上游无返回，请稍后重试。';
 
 const STORAGE_KEY = 'caphub_chat_history';
 
@@ -73,15 +76,15 @@ async function handleSend() {
   try {
     const apiHistory = chatHistory.value
       .filter(m => m.role !== 'system')
-      .slice(-18)
-      .map(m => ({ role: m.role, content: m.content.slice(0, 4000) }));
+      .slice(-HISTORY_LIMIT)
+      .map(m => ({ role: m.role, content: m.content.slice(0, HISTORY_CONTENT_LIMIT) }));
 
     const { reply } = await sendChatMessage(message, apiHistory.slice(0, -1));
     chatHistory.value.push({ role: 'assistant', content: reply });
-  } catch {
+  } catch (error) {
     chatHistory.value.push({
       role: 'assistant',
-      content: '连接中断，请稍后重试。',
+      content: error?.response?.data?.reply ?? DEFAULT_ERROR_MESSAGE,
     });
   } finally {
     sending.value = false;
