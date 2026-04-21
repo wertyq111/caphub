@@ -2,28 +2,15 @@
 
 namespace App\Clients\Ai\GitHubModels;
 
-use Illuminate\Http\Client\ConnectionException;
-use Illuminate\Http\Client\PendingRequest;
-use Illuminate\Http\Client\Pool;
-use Illuminate\Http\Client\RequestException;
-use Illuminate\Http\Client\Response;
-use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Symfony\Component\Process\Process;
 use Throwable;
 
 class GitHubModelsClient
 {
     protected const OUTPUT_SCHEMA_VERSION = 'v1';
 
-    protected const RETRYABLE_STATUS_CODES = [429, 502, 503, 504];
-
-    protected const API_VERSION = '2022-11-28';
-
-    protected const DEFAULT_RETRY_TIMES = 2;
-
     /**
-     * 通过 GitHub Models 执行翻译并返回结构化结果。
-     *
      * @param  array<string, mixed>  $payload
      * @return array<string, mixed>
      */
@@ -32,37 +19,18 @@ class GitHubModelsClient
         bool $enforceTargetLanguage = true,
         bool $allowPartialTranslatedDocument = false,
     ): array {
-        $requestPayload = $this->openAiRequestPayload($payload);
-        $attempt = 0;
-        $maxAttempts = $this->retryTimes() + 1;
-        $lastException = null;
+        $output = $this->runCopilotCommand(
+            $this->copilotCommand(
+                $this->translationPrompt($payload, $allowPartialTranslatedDocument),
+            ),
+        );
 
-        while ($attempt < $maxAttempts) {
-            try {
-                $response = $this->request()
-                    ->post('/chat/completions', $requestPayload)
-                    ->throw()
-                    ->json() ?? [];
-
-                return $this->withRetryCount($this->validateTranslationResponse(
-                    $this->normalizeResponsePayload($response),
-                    $payload,
-                    $enforceTargetLanguage,
-                    $allowPartialTranslatedDocument,
-                ), $attempt);
-            } catch (Throwable $throwable) {
-                $lastException = $this->normalizeException($throwable);
-                $attempt++;
-
-                if (! $this->shouldRetryAfter($throwable, $attempt, $maxAttempts)) {
-                    throw $lastException;
-                }
-
-                usleep($this->retryDelayInMicroseconds($throwable, $attempt));
-            }
-        }
-
-        throw $lastException ?? new RuntimeException('GitHub Models translation request failed.');
+        return $this->withRetryCount($this->validateTranslationResponse(
+            $this->decodeJsonFromText($output),
+            $payload,
+            $enforceTargetLanguage,
+            $allowPartialTranslatedDocument,
+        ), 0);
     }
 
     /**
@@ -79,69 +47,20 @@ class GitHubModelsClient
             return [];
         }
 
-        $descriptors = [];
-
-        foreach ($requests as $key => $request) {
-            $payload = (array) ($request['payload'] ?? []);
-
-            $descriptors[$key] = [
-                'payload' => $payload,
-                'request_payload' => $this->openAiRequestPayload($payload),
-                'enforce_target_language' => (bool) ($request['enforce_target_language'] ?? true),
-                'allow_partial_translated_document' => (bool) ($request['allow_partial_translated_document'] ?? false),
-            ];
-        }
-
-        if ($concurrency <= 1) {
-            $results = [];
-
-            foreach ($descriptors as $key => $descriptor) {
-                try {
-                    $results[$key] = [
-                        'response' => $this->sendTranslationPayload(
-                            $descriptor['payload'],
-                            $descriptor['enforce_target_language'],
-                            $descriptor['allow_partial_translated_document'],
-                        ),
-                    ];
-                } catch (Throwable $throwable) {
-                    $results[$key] = [
-                        'exception' => $this->normalizeException($throwable),
-                    ];
-                }
-            }
-
-            return $results;
-        }
-
-        $responses = $this->dispatchConcurrentRequests($descriptors, $concurrency);
         $results = [];
 
-        foreach ($descriptors as $key => $descriptor) {
-            $response = $responses[(string) $key] ?? $responses[$key] ?? null;
-
+        foreach ($requests as $key => $request) {
             try {
-                if ($response instanceof Throwable) {
-                    throw $response;
-                }
-
-                if (! $response instanceof Response) {
-                    throw new RuntimeException('GitHub Models concurrent translation request did not return a response.');
-                }
-
-                $responsePayload = $response->throw()->json() ?? [];
-
                 $results[$key] = [
-                    'response' => $this->withRetryCount($this->validateTranslationResponse(
-                        $this->normalizeResponsePayload($responsePayload),
-                        $descriptor['payload'],
-                        $descriptor['enforce_target_language'],
-                        $descriptor['allow_partial_translated_document'],
-                    ), 0),
+                    'response' => $this->sendTranslationPayload(
+                        (array) ($request['payload'] ?? []),
+                        (bool) ($request['enforce_target_language'] ?? true),
+                        (bool) ($request['allow_partial_translated_document'] ?? false),
+                    ),
                 ];
             } catch (Throwable $throwable) {
                 $results[$key] = [
-                    'exception' => $this->normalizeException($throwable),
+                    'exception' => $this->toRuntimeException($throwable),
                 ];
             }
         }
@@ -149,111 +68,10 @@ class GitHubModelsClient
         return $results;
     }
 
-    protected function request(): PendingRequest
-    {
-        return Http::baseUrl($this->baseUrl())
-            ->asJson()
-            ->timeout($this->timeout())
-            ->withHeaders([
-                'Accept' => 'application/vnd.github+json',
-                'X-GitHub-Api-Version' => self::API_VERSION,
-            ])
-            ->withToken($this->apiKey());
-    }
-
-    /**
-     * @param  array<array-key, array{request_payload: array<string, mixed>}>  $descriptors
-     * @return array<array-key, Response|Throwable>
-     */
-    protected function dispatchConcurrentRequests(array $descriptors, int $concurrency): array
-    {
-        $translationUrl = $this->baseUrl().'/chat/completions';
-        $apiKey = $this->apiKey();
-        $timeout = $this->timeout();
-
-        return Http::pool(function (Pool $pool) use ($descriptors, $translationUrl, $apiKey, $timeout): void {
-            foreach ($descriptors as $key => $descriptor) {
-                $pool->as((string) $key)
-                    ->asJson()
-                    ->timeout($timeout)
-                    ->withHeaders([
-                        'Accept' => 'application/vnd.github+json',
-                        'X-GitHub-Api-Version' => self::API_VERSION,
-                    ])
-                    ->withToken($apiKey)
-                    ->post($translationUrl, $descriptor['request_payload']);
-            }
-        }, max(1, $concurrency));
-    }
-
-    protected function withRetryCount(array $response, int $retryCount): array
-    {
-        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
-            'retry_count' => max(0, $retryCount),
-        ]);
-
-        return $response;
-    }
-
-    protected function normalizeException(Throwable $throwable): RuntimeException
-    {
-        $exception = $this->toRuntimeException($throwable);
-
-        if ($this->isTransientUpstreamFailure($throwable)) {
-            return new RuntimeException('upstream_timeout: '.$exception->getMessage(), (int) $exception->getCode(), $throwable);
-        }
-
-        return $exception;
-    }
-
-    protected function baseUrl(): string
-    {
-        $baseUrl = trim((string) config('services.github_models.base_url', ''));
-
-        if ($baseUrl === '') {
-            throw new RuntimeException('GitHub Models base URL is not configured.');
-        }
-
-        return rtrim($baseUrl, '/');
-    }
-
-    protected function apiKey(): string
-    {
-        $apiKey = trim((string) config('services.github_models.api_key', ''));
-
-        if ($apiKey === '') {
-            throw new RuntimeException('GitHub Models API key is not configured.');
-        }
-
-        return $apiKey;
-    }
-
-    protected function timeout(): int
-    {
-        return max(1, (int) config('services.github_models.timeout', 45));
-    }
-
-    protected function retryTimes(): int
-    {
-        return max(0, (int) config('services.github_models.retry_times', self::DEFAULT_RETRY_TIMES));
-    }
-
-    protected function providerModel(): string
-    {
-        $model = trim((string) config('services.github_models.model', 'openai/gpt-5-mini'));
-
-        if ($model === '') {
-            throw new RuntimeException('GitHub Models model is not configured.');
-        }
-
-        return $model;
-    }
-
     /**
      * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
      */
-    protected function openAiRequestPayload(array $payload): array
+    protected function translationPrompt(array $payload, bool $allowPartialTranslatedDocument): string
     {
         $documentKeys = array_keys((array) ($payload['input_document'] ?? []));
         $translatedDocumentSchema = [];
@@ -272,20 +90,26 @@ class GitHubModelsClient
             'Translate every input_document value fully into the target language.',
             'When target_lang is English, translated_document must not contain any Chinese characters.',
             'Do not leave partial source-language fragments in the translation output.',
-            'Return strict JSON only without markdown.',
-            'translated_document must preserve exactly the same keys as input_document.',
-            'JSON schema:',
-            json_encode([
-                'translated_document' => $translatedDocumentSchema,
-                'glossary_hits' => [],
-                'risk_flags' => [],
-                'notes' => [],
-                'meta' => [
-                    'schema_version' => self::OUTPUT_SCHEMA_VERSION,
-                    'provider_model' => $this->providerModel(),
-                ],
-            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'Return strict JSON only without markdown or explanation.',
         ];
+
+        if ($allowPartialTranslatedDocument) {
+            $instructions[] = 'If a translated_document key cannot be translated safely, you may omit that key instead of returning invalid content.';
+        } else {
+            $instructions[] = 'translated_document must preserve exactly the same keys as input_document.';
+        }
+
+        $instructions[] = 'JSON schema:';
+        $instructions[] = json_encode([
+            'translated_document' => $translatedDocumentSchema,
+            'glossary_hits' => [],
+            'risk_flags' => [],
+            'notes' => [],
+            'meta' => [
+                'schema_version' => self::OUTPUT_SCHEMA_VERSION,
+                'provider_model' => $this->providerModel(),
+            ],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         if ($preservePlaceholders !== []) {
             $instructions[] = 'Preserve every placeholder token exactly as provided in the source text.';
@@ -293,118 +117,127 @@ class GitHubModelsClient
             $instructions[] = 'Placeholder tokens: '.implode(', ', $preservePlaceholders);
         }
 
+        $instructions[] = 'Payload to translate:';
+        $instructions[] = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return implode("\n", $instructions);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    protected function copilotCommand(string $prompt): array
+    {
         return [
-            'model' => $this->providerModel(),
-            'stream' => false,
-            'messages' => [
-                [
-                    'role' => 'system',
-                    'content' => implode("\n", $instructions),
-                ],
-                [
-                    'role' => 'user',
-                    'content' => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-                ],
-            ],
+            $this->copilotBinary(),
+            '--model',
+            $this->copilotModel(),
+            '-p',
+            $prompt,
+            '-s',
+            '--allow-all-tools',
+            '--disable-builtin-mcps',
+            '--excluded-tools='.$this->excludedTools(),
         ];
     }
 
     /**
-     * @param  mixed  $response
-     * @param  array<string, mixed>  $payload
-     * @return array<string, mixed>
+     * @param  array<int, string>  $command
      */
-    protected function validateTranslationResponse(
-        mixed $response,
-        array $payload,
-        bool $enforceTargetLanguage = true,
-        bool $allowPartialTranslatedDocument = false,
-    ): array {
-        if (! is_array($response)) {
-            throw new RuntimeException('GitHub Models response payload must be a JSON object.');
-        }
+    protected function runCopilotCommand(array $command): string
+    {
+        $process = new Process($command);
+        $process->setTimeout($this->timeout());
+        $process->run();
 
-        foreach (['translated_document', 'glossary_hits', 'risk_flags', 'notes', 'meta'] as $key) {
-            if (! array_key_exists($key, $response)) {
-                throw new RuntimeException(sprintf('GitHub Models response payload is missing required key [%s].', $key));
-            }
-        }
+        if (! $process->isSuccessful()) {
+            $message = trim($process->getErrorOutput());
 
-        if (! is_array($response['translated_document'])
-            || ! is_array($response['glossary_hits'])
-            || ! is_array($response['risk_flags'])
-            || ! is_array($response['notes'])
-            || ! is_array($response['meta'])) {
-            throw new RuntimeException('GitHub Models response payload has an invalid schema.');
-        }
-
-        if (! array_key_exists('schema_version', $response['meta'])) {
-            throw new RuntimeException('GitHub Models response meta is missing [schema_version].');
-        }
-
-        foreach (array_keys((array) ($payload['input_document'] ?? [])) as $key) {
-            if (! array_key_exists($key, $response['translated_document'])) {
-                if ($allowPartialTranslatedDocument) {
-                    continue;
-                }
-
-                throw new RuntimeException(sprintf('GitHub Models translated_document is missing required key [%s].', $key));
+            if ($message === '') {
+                $message = trim($process->getOutput());
             }
 
-            if (! is_string($response['translated_document'][$key])) {
-                throw new RuntimeException(sprintf('GitHub Models translated_document key [%s] must be a string.', $key));
-            }
+            throw new RuntimeException($message !== '' ? $message : 'Copilot CLI translation request failed.');
         }
 
-        if ($enforceTargetLanguage) {
-            $this->validateTranslatedDocumentLanguage(
-                (array) $response['translated_document'],
-                (string) data_get($payload, 'context.target_lang', ''),
-            );
+        $output = trim($process->getOutput());
+
+        if ($output === '') {
+            throw new RuntimeException('Copilot CLI completion content is empty.');
         }
+
+        return $output;
+    }
+
+    protected function copilotBinary(): string
+    {
+        $binary = trim((string) config('services.github_models.copilot_bin', 'copilot'));
+
+        if ($binary === '') {
+            throw new RuntimeException('Copilot CLI binary is not configured.');
+        }
+
+        return $binary;
+    }
+
+    protected function excludedTools(): string
+    {
+        $tools = trim((string) config('services.github_models.copilot_excluded_tools', 'shell,write,read,url,memory'));
+
+        if ($tools === '') {
+            throw new RuntimeException('Copilot CLI excluded tools are not configured.');
+        }
+
+        return $tools;
+    }
+
+    protected function timeout(): int
+    {
+        return max(1, (int) config('services.github_models.timeout', 45));
+    }
+
+    protected function providerModel(): string
+    {
+        $model = trim((string) config('services.github_models.model', 'openai/gpt-5-mini'));
+
+        if ($model === '') {
+            throw new RuntimeException('GitHub Models model is not configured.');
+        }
+
+        return $model;
+    }
+
+    protected function copilotModel(): string
+    {
+        $model = $this->providerModel();
+
+        if (str_starts_with($model, 'openai/')) {
+            return substr($model, strlen('openai/')) ?: $model;
+        }
+
+        return $model;
+    }
+
+    protected function withRetryCount(array $response, int $retryCount): array
+    {
+        $response['meta'] = array_merge((array) ($response['meta'] ?? []), [
+            'retry_count' => max(0, $retryCount),
+        ]);
 
         return $response;
     }
 
-    /**
-     * @param  mixed  $response
-     * @return array<string, mixed>
-     */
-    protected function normalizeResponsePayload(mixed $response): array
+    protected function toRuntimeException(Throwable $throwable): RuntimeException
     {
-        if (! is_array($response)) {
-            throw new RuntimeException('GitHub Models response payload must be a JSON object.');
+        if ($throwable instanceof RuntimeException) {
+            return $throwable;
         }
 
-        if (array_key_exists('translated_document', $response)) {
-            return $response;
-        }
-
-        $content = (string) data_get($response, 'choices.0.message.content', '');
-        $decoded = $this->decodeJsonFromText($content);
-
-        if (! is_array($decoded)) {
-            throw new RuntimeException('GitHub Models completion content must be a JSON object.');
-        }
-
-        $translatedDocument = data_get($decoded, 'translated_document');
-        if (! is_array($translatedDocument)) {
-            throw new RuntimeException('GitHub Models completion content is missing [translated_document].');
-        }
-
-        return [
-            'translated_document' => $translatedDocument,
-            'glossary_hits' => is_array(data_get($decoded, 'glossary_hits')) ? data_get($decoded, 'glossary_hits') : [],
-            'risk_flags' => is_array(data_get($decoded, 'risk_flags')) ? data_get($decoded, 'risk_flags') : [],
-            'notes' => is_array(data_get($decoded, 'notes')) ? data_get($decoded, 'notes') : [],
-            'meta' => [
-                'schema_version' => data_get($decoded, 'meta.schema_version', self::OUTPUT_SCHEMA_VERSION),
-                'provider_model' => data_get($decoded, 'meta.provider_model', data_get($response, 'model', $this->providerModel())),
-            ],
-        ];
+        return new RuntimeException($throwable->getMessage(), (int) $throwable->getCode(), $throwable);
     }
 
     /**
+     * @param  string  $text
      * @return array<string, mixed>
      */
     protected function decodeJsonFromText(string $text): array
@@ -412,7 +245,7 @@ class GitHubModelsClient
         $trimmed = trim($text);
 
         if ($trimmed === '') {
-            throw new RuntimeException('GitHub Models completion content is empty.');
+            throw new RuntimeException('Copilot CLI completion content is empty.');
         }
 
         if (str_starts_with($trimmed, '```')) {
@@ -442,10 +275,63 @@ class GitHubModelsClient
         }
 
         if (! is_array($decoded)) {
-            throw new RuntimeException('GitHub Models completion content is not valid JSON.');
+            throw new RuntimeException('Copilot CLI completion content is not valid JSON.');
         }
 
         return $decoded;
+    }
+
+    /**
+     * @param  array<string, mixed>  $response
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     */
+    protected function validateTranslationResponse(
+        array $response,
+        array $payload,
+        bool $enforceTargetLanguage = true,
+        bool $allowPartialTranslatedDocument = false,
+    ): array {
+        foreach (['translated_document', 'glossary_hits', 'risk_flags', 'notes', 'meta'] as $key) {
+            if (! array_key_exists($key, $response)) {
+                throw new RuntimeException(sprintf('Copilot CLI response payload is missing required key [%s].', $key));
+            }
+        }
+
+        if (! is_array($response['translated_document'])
+            || ! is_array($response['glossary_hits'])
+            || ! is_array($response['risk_flags'])
+            || ! is_array($response['notes'])
+            || ! is_array($response['meta'])) {
+            throw new RuntimeException('Copilot CLI response payload has an invalid schema.');
+        }
+
+        if (! array_key_exists('schema_version', $response['meta'])) {
+            throw new RuntimeException('Copilot CLI response meta is missing [schema_version].');
+        }
+
+        foreach (array_keys((array) ($payload['input_document'] ?? [])) as $key) {
+            if (! array_key_exists($key, $response['translated_document'])) {
+                if ($allowPartialTranslatedDocument) {
+                    continue;
+                }
+
+                throw new RuntimeException(sprintf('Copilot CLI translated_document is missing required key [%s].', $key));
+            }
+
+            if (! is_string($response['translated_document'][$key])) {
+                throw new RuntimeException(sprintf('Copilot CLI translated_document key [%s] must be a string.', $key));
+            }
+        }
+
+        if ($enforceTargetLanguage) {
+            $this->validateTranslatedDocumentLanguage(
+                (array) $response['translated_document'],
+                (string) data_get($payload, 'context.target_lang', ''),
+            );
+        }
+
+        return $response;
     }
 
     /**
@@ -463,7 +349,7 @@ class GitHubModelsClient
             }
 
             throw new RuntimeException(sprintf(
-                'GitHub Models translated_document key [%s] contains Chinese characters for English target output.',
+                'Copilot CLI translated_document key [%s] contains Chinese characters for English target output.',
                 $key,
             ));
         }
@@ -479,53 +365,5 @@ class GitHubModelsClient
     protected function containsChineseCharacters(string $value): bool
     {
         return preg_match('/\p{Han}/u', $value) === 1;
-    }
-
-    protected function isTransientUpstreamFailure(Throwable $throwable): bool
-    {
-        if ($throwable instanceof ConnectionException) {
-            return str_contains(strtolower($throwable->getMessage()), 'curl error 28');
-        }
-
-        if ($throwable instanceof RequestException) {
-            return in_array($throwable->response?->status(), self::RETRYABLE_STATUS_CODES, true);
-        }
-
-        return false;
-    }
-
-    protected function shouldRetryAfter(Throwable $throwable, int $attempt, int $maxAttempts): bool
-    {
-        return $attempt < $maxAttempts && $this->isTransientUpstreamFailure($throwable);
-    }
-
-    protected function retryDelayInMicroseconds(Throwable $throwable, int $attempt): int
-    {
-        if ($throwable instanceof RequestException) {
-            $retryAfter = $throwable->response?->header('Retry-After');
-
-            if (is_string($retryAfter) && $retryAfter !== '') {
-                if (ctype_digit($retryAfter)) {
-                    return max(0, (int) $retryAfter) * 1_000_000;
-                }
-
-                $retryAt = strtotime($retryAfter);
-
-                if ($retryAt !== false) {
-                    return max(0, $retryAt - time()) * 1_000_000;
-                }
-            }
-        }
-
-        return max(1, min(5, $attempt * 2)) * 1_000_000;
-    }
-
-    protected function toRuntimeException(Throwable $throwable): RuntimeException
-    {
-        if ($throwable instanceof RuntimeException) {
-            return $throwable;
-        }
-
-        return new RuntimeException($throwable->getMessage(), (int) $throwable->getCode(), $throwable);
     }
 }

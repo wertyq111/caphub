@@ -16,6 +16,7 @@ services:
             IGNITION_LOCAL_SITES_PATH: '${PWD}'
         volumes:
             - '.:/var/www/html'
+            - '${COPILOT_HOME_HOST_PATH:-/home/ubuntu/.copilot}:/root/.copilot:ro'
         networks:
             - sail
         depends_on:
@@ -36,6 +37,7 @@ services:
             IGNITION_LOCAL_SITES_PATH: '${PWD}'
         volumes:
             - '.:/var/www/html'
+            - '${COPILOT_HOME_HOST_PATH:-/home/ubuntu/.copilot}:/root/.copilot:ro'
         networks:
             - sail
         depends_on:

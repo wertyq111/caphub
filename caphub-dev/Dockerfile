@@ -1,3 +1,7 @@
+FROM node:20-bookworm-slim AS copilot-cli
+
+RUN npm install -g @github/copilot@1.0.32
+
 FROM php:8.4-apache
 
 RUN apt-get update \
@@ -28,6 +32,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/composer
+COPY --from=copilot-cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=copilot-cli /usr/local/bin/copilot /usr/local/bin/copilot
+COPY --from=copilot-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 COPY docker/apache-entrypoint.sh /usr/local/bin/apache-entrypoint
 
 WORKDIR /var/www/html

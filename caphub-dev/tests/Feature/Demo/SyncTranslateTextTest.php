@@ -3,7 +3,6 @@
 use App\Clients\Ai\GitHubModels\GitHubModelsClient;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Http;
 
 uses(RefreshDatabase::class);
 
@@ -175,8 +174,11 @@ it('rejects translated content that still contains chinese when target language 
         'timeout' => 45,
     ]);
 
-    Http::fake([
-        '*' => Http::response([
+    $mockClient = Mockery::mock(GitHubModelsClient::class)->makePartial()->shouldAllowMockingProtectedMethods();
+    $mockClient
+        ->shouldReceive('runCopilotCommand')
+        ->once()
+        ->andReturn(json_encode([
             'translated_document' => [
                 'text' => 'Ethylene prices 价格 rose.',
             ],
@@ -187,8 +189,9 @@ it('rejects translated content that still contains chinese when target language 
                 'schema_version' => 'v1',
                 'provider_model' => 'openai/gpt-5-mini',
             ],
-        ], 200),
-    ]);
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+    app()->instance(GitHubModelsClient::class, $mockClient);
 
     $response = $this->postJson('/api/demo/translate/sync', [
         'input_type' => 'plain_text',
